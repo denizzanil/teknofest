@@ -1126,32 +1126,54 @@ class UygulamaDurumu:
         W_net = 0.0
         Q_in  = 0.0
         Q_out = 0.0
+
         for widget in self.bilesenler:
             tip = widget.tip
             try:
                 if tip in ("Turbine", "Compressor"):
-                    giris_b = next((b for b in self.baglantilar if b.hedef_widget is widget), None)
-                    cikis_b = next((b for b in self.baglantilar if b.kaynak_widget is widget), None)
+                    giris_b = next(
+                        (b for b in self.baglantilar
+                         if b.hedef_widget is widget), None
+                    )
+                    cikis_b = next(
+                        (b for b in self.baglantilar
+                         if b.kaynak_widget is widget), None
+                    )
                     if giris_b and cikis_b:
                         si = giris_b.cozulmus_durum
                         so = cikis_b.cozulmus_durum
-                        if si and so and si.h and so.h and si.m_dot:
+                        if (si and so
+                                and si.h is not None
+                                and so.h is not None
+                                and si.m_dot is not None):
                             dW = si.m_dot * (si.h - so.h)
-                            W_net += dW 
+                            W_net += dW
+
                 elif tip == "Heat Exchanger":
-                    giris_b = next((b for b in self.baglantilar if b.hedef_widget is widget), None)
-                    cikis_b = next((b for b in self.baglantilar if b.kaynak_widget is widget), None)
+                    giris_b = next(
+                        (b for b in self.baglantilar
+                         if b.hedef_widget is widget), None
+                    )
+                    cikis_b = next(
+                        (b for b in self.baglantilar
+                         if b.kaynak_widget is widget), None
+                    )
                     if giris_b and cikis_b:
                         si = giris_b.cozulmus_durum
                         so = cikis_b.cozulmus_durum
-                        if si and so and si.h and so.h and si.m_dot:
+                        if (si and so
+                                and si.h is not None
+                                and so.h is not None
+                                and si.m_dot is not None):
                             dQ = si.m_dot * (so.h - si.h)
                             if dQ > 0:
                                 Q_in  += dQ
                             else:
                                 Q_out += abs(dQ)
+
             except Exception:
                 pass
+
         eta = (W_net / Q_in * 100) if Q_in > 1 else None
         return W_net, Q_in, Q_out, eta
 
@@ -1214,12 +1236,11 @@ class UygulamaDurumu:
                 for p in BILESEN_CONFIGS[tip]["portlar"]:
                     key = (id(widget), p["ad"])
                     bcon = port_map.get(key)
-                    if bcon is None:
-                        continue
+                    state = bcon.cozulmus_durum if bcon is not None else None
                     if p["giris"]:
-                        obj.add_inlet(bcon.cozulmus_durum)
+                        obj.add_inlet(state)
                     else:
-                        obj.add_outlet(bcon.cozulmus_durum)
+                        obj.add_outlet(state)
 
             # Yayilim girdilerini hesapla (component-based propagation)
             for b in self.baglantilar:
