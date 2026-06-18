@@ -7,8 +7,6 @@ Gelişmiş GUI: bileşen yerleştirme, port bağlama, sınır şartı girişi,
 import flet as ft
 import flet.canvas as cv
 import math
-import json
-import os
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BÖLÜM 0: ARKA PLAN MOTORU (güvenli yükleme)
@@ -25,7 +23,7 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # BÖLÜM 1: YAPILANDIRMA SABİTLERİ
 # ─────────────────────────────────────────────────────────────────────────────
-W, H = 100, 60  # Bileşen boyutları (piksel)
+W, H = 100, 50  # Bileşen boyutları (piksel)
 
 BILESEN_CONFIGS = {
     "Turbine": {
@@ -192,11 +190,22 @@ class Baglanti:
         self.hedef_port    = hedef_port
         self.etiket        = etiket
         self.sinir_sartlari: dict = {}  # T, P, m_dot
+        self.kullanici_girdileri: dict = {}
+        # Örnek: {"P": 21000000.0, "T": 823.0}
+        # Kullanıcının elle girdiği değerler burada saklanır.
+        # sinir_sartlari ile aynı içeriğe sahip olacak,
+        # ama ayrı tutulacak çünkü renk kodlaması için
+        # hangi değerin kullanıcıdan geldiğini bilmemiz gerekiyor.
+        self.motor_sonuclari: dict = {}
+        # Örnek: {"h": 354800.0, "s": 1507.0}
+        # Motor çözdükten sonra hesaplanan değerler buraya yazılır.
         self.cozulmus_durum = None      # State nesnesi, çözümden sonra dolar
+        self.yayilim_girdileri: dict = {}
         self.orta_nokta_widget = None
         self.rota_noktalari = []
         self.rota_widgetlari = []
         self.durum_kutusu_widget = None
+        self.initial_direction = None
 
     def kaynak_konum(self):
         return self.kaynak_widget.port_gercek_konum(self.kaynak_port)
@@ -207,16 +216,30 @@ class Baglanti:
     def orta_konum(self):
         x1, y1 = self.kaynak_konum()
         x2, y2 = self.hedef_konum()
-        return ((x1 + x2) / 2, (y1 + y2) / 2)
+        noktalar = [(x1, y1)] + self.rota() + [(x2, y2)]
+        en_uzun = None
+        max_uzunluk = -1.0
+        for (xa, ya), (xb, yb) in zip(noktalar, noktalar[1:]):
+            seg_uzunluk = math.hypot(xb - xa, yb - ya)
+            if seg_uzunluk > max_uzunluk:
+                max_uzunluk = seg_uzunluk
+                en_uzun = (xa, ya, xb, yb)
+        if en_uzun is None:
+            return ((x1 + x2) / 2, (y1 + y2) / 2)
+        xa, ya, xb, yb = en_uzun
+        return ((xa + xb) / 2, (ya + yb) / 2)
 
     def varsayilan_rota(self):
         x1, y1 = self.kaynak_konum()
         x2, y2 = self.hedef_konum()
-        mx = (x1 + x2) / 2
-        return [(mx, y1), (mx, y2)]
+        if x1 == x2 or y1 == y2:
+            return []
+        if abs(x2 - x1) >= abs(y2 - y1):
+            return [(x2, y1)]
+        return [(x1, y2)]
 
     def rota(self):
-        return self.rota_noktalari or self.varsayilan_rota()
+        return self.rota_noktalari
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,12 +254,14 @@ class UygulamaDurumu:
         self.sag_panel_icerik   = None
         self.durum_metni        = None
         self.akiskan: str       = "CarbonDioxide"
+        self._akiskan_dd_ref = None
 
         self.bilesenler: list   = []
         self.baglantilar: list  = []
         self.bekleyen_port      = None  # (BilesenWidget, port_dict)
         self.gecici_rota        = []
         self.gecici_mouse       = None
+        self.bekleyen_initial_direction = None
         self.sayac: dict        = {}
         self.durum_sayac        = 0
         self._aktif_dlg         = None
@@ -302,14 +327,13 @@ class UygulamaDurumu:
         b.durum_kutusu_widget = None
 
     def _baglanti_widgetleri_ekle(self, b):
-        if not b.rota_noktalari:
-            b.rota_noktalari = b.varsayilan_rota()
         b.rota_widgetlari = []
         for i in range(len(b.rota_noktalari)):
             nokta = RotaNoktasi(b, self, i)
             b.rota_widgetlari.append(nokta)
             self.cizim_alani.controls.append(nokta)
-        b.orta_nokta_widget = b.rota_widgetlari[0] if b.rota_widgetlari else None
+        b.orta_nokta_widget = BaglantiBolumu(b, self)
+        self.cizim_alani.controls.append(b.orta_nokta_widget)
 
     def durum_penceresi_ac(self, b):
         if b.durum_kutusu_widget and b.durum_kutusu_widget in self.cizim_alani.controls:
@@ -345,6 +369,8 @@ class UygulamaDurumu:
     def rota_widgetlarini_guncelle(self, b):
         for w in getattr(b, "rota_widgetlari", []):
             w.konumu_guncelle()
+        if b.orta_nokta_widget and b.orta_nokta_widget in self.cizim_alani.controls:
+            b.orta_nokta_widget.konumu_guncelle()
         if b.durum_kutusu_widget and b.durum_kutusu_widget in self.cizim_alani.controls:
             b.durum_kutusu_widget.verileri_guncelle()
 
@@ -365,6 +391,13 @@ class UygulamaDurumu:
             if isinstance(p, (tuple, list)) and len(p) >= 2:
                 return float(p[0]), float(p[1])
         return None
+
+    def _infer_direction_from_delta(self, src_xy, dest_xy):
+        dx = dest_xy[0] - src_xy[0]
+        dy = dest_xy[1] - src_xy[1]
+        if abs(dy) >= abs(dx):
+            return "UP" if dy < 0 else "DOWN"
+        return "RIGHT" if dx > 0 else "LEFT"
 
     def _son_rota_noktasi(self):
         if self.gecici_rota:
@@ -389,7 +422,37 @@ class UygulamaDurumu:
         xy = self._event_xy(e)
         if xy is None:
             return
-        self.gecici_mouse = self._eksen_kilitli_nokta(*xy)
+        # determine last fixed point
+        son = self._son_rota_noktasi()
+        if not son:
+            return
+        # determine next segment orientation
+        if self.bekleyen_initial_direction is None and not self.gecici_rota:
+            # infer from mouse relative to source port
+            src_w, src_p = self.bekleyen_port
+            src_xy = src_w.port_gercek_konum(src_p)
+            dir_guess = self._infer_direction_from_delta(src_xy, xy)
+            orient_vertical = dir_guess in ("UP", "DOWN")
+        else:
+            # if initial known or there are waypoints, compute parity
+            if self.bekleyen_initial_direction is None:
+                dir0 = self._infer_direction_from_delta(self._son_rota_noktasi(), xy)
+            else:
+                dir0 = self.bekleyen_initial_direction
+            # determine number of fixed segments so far
+            seg_index = len(self.gecici_rota) + 1
+            # seg_index orientation: if initial vertical then odd segments vertical
+            initial_vert = dir0 in ("UP", "DOWN")
+            orient_vertical = initial_vert if (seg_index % 2 == 1) else not initial_vert
+
+        # compute preview bend
+        lx, ly = son
+        mx, my = xy
+        if orient_vertical:
+            bend = (lx, my)
+        else:
+            bend = (mx, ly)
+        self.gecici_mouse = bend
         self._ciz_baglantilar()
 
     def gecici_rota_tikla(self, e):
@@ -398,10 +461,38 @@ class UygulamaDurumu:
         xy = self._event_xy(e)
         if xy is None:
             return
-        nokta = self._eksen_kilitli_nokta(*xy)
-        if not self.gecici_rota or self.gecici_rota[-1] != nokta:
-            self.gecici_rota.append(nokta)
-        self.gecici_mouse = nokta
+        src_w, src_p = self.bekleyen_port
+        last = self._son_rota_noktasi()
+        if last is None:
+            return
+        # determine orientation for next segment
+        if self.bekleyen_initial_direction is None and not self.gecici_rota:
+            dir_guess = self._infer_direction_from_delta(src_w.port_gercek_konum(src_p), xy)
+        else:
+            dir_guess = self.bekleyen_initial_direction or self._infer_direction_from_delta(last, xy)
+        seg_index = len(self.gecici_rota) + 1
+        initial_vert = dir_guess in ("UP", "DOWN")
+        orient_vertical = initial_vert if (seg_index % 2 == 1) else not initial_vert
+
+        lx, ly = last
+        cx, cy = xy
+        if orient_vertical:
+            new_wp = (lx, cy)
+        else:
+            new_wp = (cx, ly)
+
+        # set initial_direction if first waypoint
+        if not self.gecici_rota:
+            # infer signed direction relative to source port
+            src_xy = src_w.port_gercek_konum(src_p)
+            if abs(cy - src_xy[1]) >= abs(cx - src_xy[0]):
+                self.bekleyen_initial_direction = "UP" if cy < src_xy[1] else "DOWN"
+            else:
+                self.bekleyen_initial_direction = "LEFT" if cx < src_xy[0] else "RIGHT"
+
+        if not self.gecici_rota or self.gecici_rota[-1] != new_wp:
+            self.gecici_rota.append(new_wp)
+        self.gecici_mouse = new_wp
         self._ciz_baglantilar()
         self._durum("Kirik nokta eklendi; fareyi yeni yone goturup devam edin")
 
@@ -436,6 +527,7 @@ class UygulamaDurumu:
             self.bekleyen_port = None
             self.gecici_rota = []
             self.gecici_mouse = None
+            self.bekleyen_initial_direction = None
             self._ciz_baglantilar()
             self._durum("Baglanti iptal edildi")
             return
@@ -449,9 +541,36 @@ class UygulamaDurumu:
                 return
 
         b = Baglanti(src_w, src_p, widget, port_cfg, self.yeni_durum_etiketi())
-        b.rota_noktalari = list(self.gecici_rota)
+        if self.gecici_rota:
+            b.rota_noktalari = list(self.gecici_rota)
+        else:
+            src_xy = src_w.port_gercek_konum(src_p)
+            dst_xy = widget.port_gercek_konum(port_cfg)
+            if self.gecici_mouse and self.gecici_mouse not in (src_xy, dst_xy):
+                b.rota_noktalari = [self.gecici_mouse]
+            elif src_xy[0] != dst_xy[0] and src_xy[1] != dst_xy[1]:
+                if abs(dst_xy[0] - src_xy[0]) >= abs(dst_xy[1] - src_xy[1]):
+                    b.rota_noktalari = [(dst_xy[0], src_xy[1])]
+                else:
+                    b.rota_noktalari = [(src_xy[0], dst_xy[1])]
+            else:
+                b.rota_noktalari = []
         self.baglantilar.append(b)
         self._baglanti_widgetleri_ekle(b)
+        # finalize initial_direction for the connection
+        if self.bekleyen_initial_direction is not None:
+            b.initial_direction = self.bekleyen_initial_direction
+        else:
+            # infer from first waypoint or directly from src->dst
+            src_xy = src_w.port_gercek_konum(src_p)
+            dst_xy = widget.port_gercek_konum(port_cfg)
+            if b.rota_noktalari:
+                first = b.rota_noktalari[0]
+                d = self._infer_direction_from_delta(src_xy, first)
+            else:
+                d = self._infer_direction_from_delta(src_xy, dst_xy)
+            b.initial_direction = d
+        self.bekleyen_initial_direction = None
         self.bekleyen_port = None
         self.gecici_rota = []
         self.gecici_mouse = None
@@ -463,6 +582,41 @@ class UygulamaDurumu:
 
     def baglantilari_yenile(self):
         """Bileşen hareket ettiğinde çizgileri ve orta noktaları güncelle."""
+        # sync first/last waypoint to moving ports per Manhattan rules
+        for b in self.baglantilar:
+            try:
+                src_xy = b.kaynak_konum()
+                dst_xy = b.hedef_konum()
+                # update first waypoint follow source according to initial_direction
+                if b.rota_noktalari:
+                    # first waypoint
+                    x0, y0 = b.rota_noktalari[0]
+                    if b.initial_direction in ("UP", "DOWN"):
+                        # x should follow source
+                        if x0 != src_xy[0]:
+                            b.rota_noktalari[0] = (src_xy[0], y0)
+                    elif b.initial_direction in ("LEFT", "RIGHT"):
+                        if y0 != src_xy[1]:
+                            b.rota_noktalari[0] = (x0, src_xy[1])
+                    # last waypoint follow destination for last segment orientation
+                    last = b.rota_noktalari[-1]
+                    if len(b.rota_noktalari) >= 1:
+                        prev = b.rota_noktalari[-2] if len(b.rota_noktalari) >= 2 else src_xy
+                        # determine orientation of last segment prev -> last
+                        if prev[0] == last[0]:
+                            # vertical segment -> last.x fixed, last.y should follow dst if needed
+                            if last[0] != dst_xy[0]:
+                                # keep x same but allow y to follow dst
+                                b.rota_noktalari[-1] = (last[0], dst_xy[1])
+                        elif prev[1] == last[1]:
+                            # horizontal segment
+                            if last[1] != dst_xy[1]:
+                                b.rota_noktalari[-1] = (dst_xy[0], last[1])
+                else:
+                    # no waypoints: nothing to sync except segments drawn directly
+                    pass
+            except Exception:
+                pass
         self._ciz_baglantilar()
         for b in self.baglantilar:
             self.rota_widgetlarini_guncelle(b)
@@ -470,8 +624,9 @@ class UygulamaDurumu:
     def _ciz_baglantilar(self):
         shapes = []
         for b in self.baglantilar:
-            x1, y1 = b.kaynak_konum()
-            x2, y2 = b.hedef_konum()
+            src = b.kaynak_konum()
+            dst = b.hedef_konum()
+            pts = [src] + list(b.rota() or []) + [dst]
             renk = ft.Colors.GREEN_300 if b.cozulmus_durum else ft.Colors.CYAN_400
             paint = ft.Paint(
                 stroke_width=2.5,
@@ -480,46 +635,58 @@ class UygulamaDurumu:
                 stroke_cap=ft.StrokeCap.ROUND,
                 stroke_join=ft.StrokeJoin.ROUND,
             )
-            elements = [cv.Path.MoveTo(x1, y1)]
-            son_x, son_y = x1, y1
-            for px, py in b.rota():
-                elements.append(cv.Path.LineTo(px, son_y))
-                elements.append(cv.Path.LineTo(px, py))
-                son_x, son_y = px, py
-            elements.append(cv.Path.LineTo(x2, son_y))
-            elements.append(cv.Path.LineTo(x2, y2))
-            shapes.append(cv.Path(elements=elements, paint=paint))
-
-            ok_yonu = 1 if y2 >= son_y else -1
-            shapes.append(cv.Path(
-                elements=[
-                    cv.Path.MoveTo(x2, y2),
-                    cv.Path.LineTo(x2 - 5, y2 - ok_yonu * 9),
-                    cv.Path.MoveTo(x2, y2),
-                    cv.Path.LineTo(x2 + 5, y2 - ok_yonu * 9),
-                ],
-                paint=paint,
-            ))
-        if self.bekleyen_port and self.gecici_mouse:
+            # draw each Manhattan segment (must be axis-aligned)
+            longest_len = -1.0
+            longest_seg = None
+            for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+                # straight line between points (should be axis-aligned)
+                shapes.append(cv.Path(elements=[cv.Path.MoveTo(x1, y1), cv.Path.LineTo(x2, y2)], paint=paint))
+                seg_len = math.hypot(x2 - x1, y2 - y1)
+                if seg_len > longest_len:
+                    longest_len = seg_len
+                    longest_seg = (x1, y1, x2, y2)
+                # arrow at 60% of segment
+                ax = x1 + 0.6 * (x2 - x1)
+                ay = y1 + 0.6 * (y2 - y1)
+                if x1 == x2:
+                    # vertical
+                    dir_down = y2 > y1
+                    if dir_down:
+                        wing1 = (ax - 6, ay - 6)
+                        wing2 = (ax + 6, ay - 6)
+                    else:
+                        wing1 = (ax - 6, ay + 6)
+                        wing2 = (ax + 6, ay + 6)
+                else:
+                    # horizontal
+                    dir_right = x2 > x1
+                    if dir_right:
+                        wing1 = (ax - 6, ay - 6)
+                        wing2 = (ax - 6, ay + 6)
+                    else:
+                        wing1 = (ax + 6, ay - 6)
+                        wing2 = (ax + 6, ay + 6)
+                shapes.append(cv.Path(elements=[
+                    cv.Path.MoveTo(ax, ay), cv.Path.LineTo(*wing1),
+                    cv.Path.MoveTo(ax, ay), cv.Path.LineTo(*wing2)
+                ], paint=paint))
+            # store longest segment for possible state placement (BaglantiBolumu widget uses orta_konum)
+        # preview drawing during active connection (rubber-band)
+        if self.bekleyen_port:
             src_w, src_p = self.bekleyen_port
-            x1, y1 = src_w.port_gercek_konum(src_p)
-            paint = ft.Paint(
-                stroke_width=2.5,
-                color=ft.Colors.AMBER_300,
-                style=ft.PaintingStyle.STROKE,
-                stroke_cap=ft.StrokeCap.ROUND,
-                stroke_join=ft.StrokeJoin.ROUND,
-            )
-            elements = [cv.Path.MoveTo(x1, y1)]
-            son_x, son_y = x1, y1
-            for px, py in self.gecici_rota:
-                elements.append(cv.Path.LineTo(px, son_y))
-                elements.append(cv.Path.LineTo(px, py))
-                son_x, son_y = px, py
-            mx, my = self.gecici_mouse
-            elements.append(cv.Path.LineTo(mx, son_y))
-            elements.append(cv.Path.LineTo(mx, my))
-            shapes.append(cv.Path(elements=elements, paint=paint))
+            src = src_w.port_gercek_konum(src_p)
+            preview_pts = [src] + list(self.gecici_rota) + ([self.gecici_mouse] if self.gecici_mouse else [])
+            preview_paint_fixed = ft.Paint(stroke_width=2.5, color=ft.Colors.CYAN_200,
+                                           style=ft.PaintingStyle.STROKE)
+            preview_paint_preview = ft.Paint(stroke_width=2.5, color=ft.Colors.AMBER_300,
+                                             style=ft.PaintingStyle.STROKE)
+            # draw fixed segments (from src through existing waypoints)
+            for (x1, y1), (x2, y2) in zip(preview_pts, preview_pts[1:]):
+                # if this is last segment and ends at gecici_mouse, draw with preview paint
+                if (x2, y2) == (self.gecici_mouse):
+                    shapes.append(cv.Path(elements=[cv.Path.MoveTo(x1, y1), cv.Path.LineTo(x2, y2)], paint=preview_paint_preview))
+                else:
+                    shapes.append(cv.Path(elements=[cv.Path.MoveTo(x1, y1), cv.Path.LineTo(x2, y2)], paint=preview_paint_fixed))
         self.baglanti_canvas.shapes = shapes
         self.baglanti_canvas.update()
 
@@ -569,8 +736,19 @@ class UygulamaDurumu:
 
     def _yansit(self, widget):
         widget._yansima *= -1
-        widget.scale = ft.Scale(scale_x=widget._yansima, scale_y=1,
-                                alignment=ft.Alignment(0, 0))
+        # Tum widget'i aynala (sekil icin)
+        widget.scale = ft.Scale(
+            scale_x=widget._yansima,
+            scale_y=1,
+            alignment=ft.Alignment(0, 0),
+        )
+        # Metin containerlarini ters yonde aynala (metin iki kere aynalaninca duz kalir)
+        for cont in getattr(widget, "_metin_containerlar", []):
+            cont.scale = ft.Scale(
+                scale_x=widget._yansima,
+                scale_y=1,
+                alignment=ft.Alignment(0, 0),
+            )
         widget.update()
 
     def ozellikleri_goster(self, widget):
@@ -669,7 +847,7 @@ class UygulamaDurumu:
         if not MOTOR_HAZIR:
             return None
         s = State(self.akiskan)
-        for k in ("T", "P", "m_dot"):
+        for k in ("T", "P", "h", "s", "m_dot"):
             if k in sartlar:
                 setattr(s, k, sartlar[k])
         s.update()
@@ -689,13 +867,66 @@ class UygulamaDurumu:
 
     def _filtreli_sinir_sartlari(self, sartlar: dict):
         temiz = {}
-        for k in ("T", "P", "m_dot"):
+        for k in ("T", "P", "h", "s", "m_dot"):
             if k in sartlar and sartlar[k] is not None:
                 temiz[k] = self._sicaklik_kayit_k(sartlar[k]) if k == "T" else sartlar[k]
         return temiz
 
+    def _yayilan_parametreler(self, b) -> dict:
+        """
+        Baglanti b icin, kaynak bilesenden otomatik yayilan
+        parametreleri hesapla.
+        """
+        yayilan = {}
+        src = b.kaynak_widget
+        tip = src.tip
+
+        # Kaynak bilesene giren baglantiyi bul
+        giris_b = next((x for x in self.baglantilar if x.hedef_widget is src), None)
+        if giris_b is None:
+            return yayilan
+
+        # Oncelik sirasi: cozulmus_durum > kullanici_girdileri
+        #                 > yayilim_girdileri > sinir_sartlari
+        def deger_al(alan):
+            s = giris_b.cozulmus_durum
+            if s and getattr(s, alan, None) is not None:
+                return getattr(s, alan)
+            return (giris_b.kullanici_girdileri.get(alan)
+                    or giris_b.yayilim_girdileri.get(alan)
+                    or giris_b.sinir_sartlari.get(alan))
+
+        # KURAL 1: m_dot her bilesende korunur (Splitter/Mixer disinda)
+        if tip not in ("Splitter", "Mixer"):
+            m = deger_al("m_dot")
+            if m is not None:
+                yayilan["m_dot"] = m
+
+        # KURAL 2: P sadece izobarik sayilan bilesenlerde korunur
+        if tip in ("Heat Exchanger", "Recuperator"):
+            p = deger_al("P")
+            if p is not None:
+                yayilan["P"] = p
+
+        return yayilan
+
     def sinir_sartlari_goster(self, b):
+        # compute propagated inputs first
+        b.yayilim_girdileri = self._yayilan_parametreler(b)
         alanlar: dict = {}
+        # termodinamik alanlar sayaci (T,P,h,s) kullanici+yayilim
+        termodinamik_bilinen = sum(1 for a in ("T", "P", "h", "s") if (a in b.kullanici_girdileri or a in b.yayilim_girdileri))
+        n = termodinamik_bilinen
+        if n >= 2:
+            sayac_renk = "#22C55E"
+            sayac_ikon = "✓ Çözülebilir"
+        elif n == 1:
+            sayac_renk = "#F59E0B"
+            sayac_ikon = "⚠ Eksik (1 parametre daha gerekli)"
+        else:
+            sayac_renk = "#6B7280"
+            sayac_ikon = "Veri yok"
+
         girdiler = [
             ft.Text(
                 b.etiket or "Durum",
@@ -709,33 +940,79 @@ class UygulamaDurumu:
                 size=11,
                 color=ft.Colors.BLUE_GREY_300,
             ),
+            ft.Text(
+                f"{n} / 2 parametre girildi — {sayac_ikon}",
+                size=11,
+                color=sayac_renk,
+            ),
             ft.Divider(color=ft.Colors.BLUE_GREY_600),
         ]
 
         tanim = [
-            ("T",     "Sicaklik T [C]",         "bos = bilinmiyor"),
-            ("P",     "Basinc P [Pa]",           "bos = bilinmiyor"),
-            ("m_dot", "Kutlesel Debi m_dot [kg/s]", "bos = bilinmiyor"),
+            ("T",     "Sıcaklık T [C]",     "UNKNOWN"),
+            ("P",     "Basınç P [Pa]",      "UNKNOWN"),
+            ("h",     "Entalpi h [J/kg]",   "UNKNOWN"),
+            ("s",     "Entropi s [J/kgK]",  "UNKNOWN"),
+            ("m_dot", "Kütlesel Debi [kg/s]", "UNKNOWN"),
         ]
+
         for k, label, hint in tanim:
-            mevcut = b.sinir_sartlari.get(k, "")
-            if k == "T" and mevcut != "":
-                mevcut = self._sicaklik_gosterim_c(self._filtreli_sinir_sartlari({"T": mevcut}).get("T"))
+            kullanici_var = k in b.kullanici_girdileri
+            yayilim_var = k in b.yayilim_girdileri and not kullanici_var
+            motor_var = k in b.motor_sonuclari and not kullanici_var and not yayilim_var
+
+            if kullanici_var:
+                if k == "T":
+                    deger = self._sicaklik_gosterim_c(b.kullanici_girdileri[k])
+                else:
+                    deger = b.kullanici_girdileri[k]
+                value = f"{deger:.2f}" if deger is not None else ""
+                border_color = "#22C55E"
+                label_color = "#22C55E"
+                read_only = False
+            elif yayilim_var:
+                if k == "T":
+                    deger = self._sicaklik_gosterim_c(b.yayilim_girdileri[k])
+                else:
+                    deger = b.yayilim_girdileri[k]
+                value = f"(yayilim) {deger:.2f}"
+                border_color = "#A855F7"
+                label_color = "#A855F7"
+                read_only = True
+            elif motor_var:
+                if k == "T":
+                    deger = self._sicaklik_gosterim_c(b.motor_sonuclari[k])
+                else:
+                    deger = b.motor_sonuclari[k]
+                value = f"(motor) {deger:.2f}"
+                border_color = "#3B82F6"
+                label_color = "#3B82F6"
+                read_only = True
+            else:
+                value = ""
+                border_color = ft.Colors.BLUE_GREY_500
+                label_color = ft.Colors.BLUE_GREY_300
+                read_only = False
+
             f = ft.TextField(
                 label=label,
-                value=str(mevcut) if mevcut != "" else "",
+                value=value,
                 hint_text=hint,
                 dense=True,
-                border_color=ft.Colors.BLUE_GREY_500,
-                focused_border_color=ft.Colors.CYAN_400,
+                read_only=read_only,
+                border_color=border_color,
+                focused_border_color=border_color,
                 text_style=ft.TextStyle(color=ft.Colors.WHITE),
-                label_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_300),
+                label_style=ft.TextStyle(color=label_color),
                 hint_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_500, size=10),
             )
             alanlar[k] = f
             girdiler.append(f)
 
-        onizleme = self._sinir_sartlarini_coz(self._filtreli_sinir_sartlari(b.sinir_sartlari))
+        # Onizleme icin kullanici + yayilim degerlerini birlestir (kullanici baskindir)
+        merged = dict(b.yayilim_girdileri)
+        merged.update(b.kullanici_girdileri)
+        onizleme = self._sinir_sartlarini_coz(self._filtreli_sinir_sartlari(merged))
         if onizleme and (onizleme.h is not None or onizleme.s is not None):
             h_text = f"{onizleme.h / 1000:.3f} kJ/kg" if onizleme.h is not None else "-"
             s_text = f"{onizleme.s / 1000:.5f} kJ/kgK" if onizleme.s is not None else "-"
@@ -756,15 +1033,18 @@ class UygulamaDurumu:
             ])
 
         def kaydet(e):
-            yeni = {}
+            yeni_kullanici = {}
             for k, f in alanlar.items():
-                if f.value.strip():
+                if f.value.strip() and not f.read_only:
                     try:
                         deger = float(f.value)
-                        yeni[k] = self._sicaklik_kayit_k(deger) if k == "T" else deger
+                        if k == "T":
+                            deger = self._sicaklik_kayit_k(deger)
+                        yeni_kullanici[k] = deger
                     except ValueError:
                         pass
-            b.sinir_sartlari = self._filtreli_sinir_sartlari(yeni)
+            b.kullanici_girdileri = yeni_kullanici
+            b.sinir_sartlari = dict(yeni_kullanici)
             if b.durum_kutusu_widget and b.durum_kutusu_widget in self.cizim_alani.controls:
                 b.durum_kutusu_widget.verileri_guncelle()
             self._dlg_kapat()
@@ -795,6 +1075,13 @@ class UygulamaDurumu:
             return
         self.tumu_temizle()
         self.akiskan = veri.get("akiskan", "CarbonDioxide")
+        # update dropdown widget if main stored a reference
+        if hasattr(self, "_akiskan_dd_ref") and self._akiskan_dd_ref:
+            try:
+                self._akiskan_dd_ref.value = self.akiskan
+                self._akiskan_dd_ref.update()
+            except Exception:
+                pass
         isim_map = {}
         for bd in veri["bilesenler"]:
             w = BilesenWidget(bd["tip"], bd["isim"], self)
@@ -814,7 +1101,10 @@ class UygulamaDurumu:
             if not src_p or not dst_p:
                 continue
             b = Baglanti(src_w, src_p, dst_w, dst_p, bd.get("etiket"))
-            b.sinir_sartlari = self._filtreli_sinir_sartlari(dict(bd.get("sinir_sartlari", {})))
+            b.kullanici_girdileri = self._filtreli_sinir_sartlari(dict(bd.get("kullanici_girdileri", bd.get("sinir_sartlari", {}))))
+            b.sinir_sartlari = dict(b.kullanici_girdileri)
+            b.yayilim_girdileri = self._filtreli_sinir_sartlari(dict(bd.get("yayilim_girdileri", {})))
+            b.motor_sonuclari = self._filtreli_sinir_sartlari(dict(bd.get("motor_sonuclari", {})))
             if bd.get("rota"):
                 b.rota_noktalari = [tuple(p) for p in bd["rota"]]
             self.baglantilar.append(b)
@@ -826,86 +1116,10 @@ class UygulamaDurumu:
 
     # ── Kaydet / Yukle ────────────────────────────────────────────────────
     def devreyi_kaydet(self):
-        veri = {
-            "akiskan": self.akiskan,
-            "bilesenler": [
-                {
-                    "tip":    w.tip,
-                    "isim":   w.isim,
-                    "left":   w.left,
-                    "top":    w.top,
-                    "aci":    w._aci_adet,
-                    "ayarlar": w.ayarlar,
-                }
-                for w in self.bilesenler
-            ],
-            "baglantilar": [
-                {
-                    "kaynak_isim": b.kaynak_widget.isim,
-                    "kaynak_port": b.kaynak_port["ad"],
-                    "hedef_isim":  b.hedef_widget.isim,
-                    "hedef_port":  b.hedef_port["ad"],
-                    "etiket": b.etiket,
-                    "sinir_sartlari": self._filtreli_sinir_sartlari(b.sinir_sartlari),
-                    "rota": b.rota_noktalari,
-                    "durum_left": b.durum_kutusu_widget.left if b.durum_kutusu_widget else None,
-                    "durum_top": b.durum_kutusu_widget.top if b.durum_kutusu_widget else None,
-                }
-                for b in self.baglantilar
-            ],
-        }
-        dosya = os.path.join(os.path.dirname(__file__), "devre.json")
-        with open(dosya, "w", encoding="utf-8") as f:
-            json.dump(veri, f, ensure_ascii=False, indent=2)
-        self._durum("Kaydedildi: devre.json")
+        raise NotImplementedError("devreyi_kaydet removed")
 
     def devreyi_yukle(self):
-        dosya = os.path.join(os.path.dirname(__file__), "devre.json")
-        if not os.path.exists(dosya):
-            self._durum("Hata: devre.json bulunamadi")
-            return
-        with open(dosya, "r", encoding="utf-8") as f:
-            veri = json.load(f)
-        self.tumu_temizle()
-        self.akiskan = veri.get("akiskan", "CarbonDioxide")
-        isim_map = {}
-        for bd in veri.get("bilesenler", []):
-            w = BilesenWidget(bd["tip"], bd["isim"], self)
-            w.left      = bd["left"]
-            w.top       = bd["top"]
-            w._aci_adet = bd.get("aci", 0)
-            w._aci      = w._aci_adet * math.pi / 2
-            if w._aci_adet:
-                w.rotate = ft.Rotate(angle=w._aci, alignment=ft.Alignment(0, 0))
-            w.ayarlar = dict(bd.get("ayarlar", {}))
-            self.bilesenler.append(w)
-            self.cizim_alani.controls.append(w)
-            isim_map[bd["isim"]] = w
-        for bd in veri.get("baglantilar", []):
-            src_w = isim_map.get(bd["kaynak_isim"])
-            dst_w = isim_map.get(bd["hedef_isim"])
-            if not src_w or not dst_w:
-                continue
-            src_p = port_bul(src_w.tip, bd["kaynak_port"])
-            dst_p = port_bul(dst_w.tip, bd["hedef_port"])
-            if not src_p or not dst_p:
-                continue
-            b = Baglanti(src_w, src_p, dst_w, dst_p, bd.get("etiket"))
-            b.sinir_sartlari = self._filtreli_sinir_sartlari(dict(bd.get("sinir_sartlari", {})))
-            if bd.get("rota"):
-                b.rota_noktalari = [tuple(p) for p in bd["rota"]]
-            elif bd.get("wx") or bd.get("wy"):
-                mx, my = b.orta_konum()
-                b.rota_noktalari = [(mx + bd.get("wx", 0), my + bd.get("wy", 0))]
-            self.baglantilar.append(b)
-            self._baglanti_widgetleri_ekle(b)
-            if b.durum_kutusu_widget and bd.get("durum_left") is not None and bd.get("durum_top") is not None:
-                b.durum_kutusu_widget.left = bd["durum_left"]
-                b.durum_kutusu_widget.top = bd["durum_top"]
-        self.durum_sayacini_guncelle()
-        self._ciz_baglantilar()
-        self.cizim_alani.update()
-        self._durum("Devre yuklendi: devre.json")
+        raise NotImplementedError("devreyi_yukle removed")
 
     # ── Verim Hesaplama ───────────────────────────────────────────────────
     def _verim_hesapla(self):
@@ -923,7 +1137,7 @@ class UygulamaDurumu:
                         so = cikis_b.cozulmus_durum
                         if si and so and si.h and so.h and si.m_dot:
                             dW = si.m_dot * (si.h - so.h)
-                            W_net += dW if tip == "Turbine" else -dW
+                            W_net += dW 
                 elif tip == "Heat Exchanger":
                     giris_b = next((b for b in self.baglantilar if b.hedef_widget is widget), None)
                     cikis_b = next((b for b in self.baglantilar if b.kaynak_widget is widget), None)
@@ -960,6 +1174,8 @@ class UygulamaDurumu:
             solver = CycleSolver()
 
             for b in self.baglantilar:
+                # clear prior solution so failed solves don't leave stale data
+                b.cozulmus_durum = None
                 s = State(self.akiskan)
                 b.sinir_sartlari = self._filtreli_sinir_sartlari(b.sinir_sartlari)
                 for k, v in b.sinir_sartlari.items():
@@ -1005,7 +1221,23 @@ class UygulamaDurumu:
                     else:
                         obj.add_outlet(bcon.cozulmus_durum)
 
+            # Yayilim girdilerini hesapla (component-based propagation)
+            for b in self.baglantilar:
+                b.yayilim_girdileri = self._yayilan_parametreler(b)
+
             basarili = solver.solve(max_iterations=100)
+            for b in self.baglantilar:
+                b.sinir_sartlari = self._filtreli_sinir_sartlari(b.sinir_sartlari)
+                b.kullanici_girdileri = dict(b.sinir_sartlari)
+                s = b.cozulmus_durum
+                if s is None:
+                    continue
+                b.motor_sonuclari = {}
+                for alan in ("T", "P", "h", "s", "m_dot"):
+                    if (alan not in b.kullanici_girdileri and alan not in b.yayilim_girdileri):
+                        deger = getattr(s, alan, None)
+                        if deger is not None:
+                            b.motor_sonuclari[alan] = deger
             self._ciz_baglantilar()
             for b in self.baglantilar:
                 if b.durum_kutusu_widget:
@@ -1149,6 +1381,7 @@ class BilesenWidget(ft.Stack):
         self._aci      = 0.0
         self._aci_adet = 0   # 90 derece adim sayisi (0-3)
         self._yansima  = 1
+        self._metin_containerlar = []
 
         self.controls = [self._gorsel_olustur(), self._kalkan_olustur(), *self._portlar_olustur(), self._ayar_btn_olustur(), self._dondur_btn_olustur()]
 
@@ -1156,9 +1389,13 @@ class BilesenWidget(ft.Stack):
         """Port konumunu rotasyon dikkate alarak hesapla."""
         cx, cy = W / 2, H / 2
         px, py = port_cfg["x"] - cx, port_cfg["y"] - cy
+        # Once yansitmayi uygula (rotasyondan once)
+        px = px * self._yansima
+
+        # Sonra rotasyonu uygula
         n = self._aci_adet % 4
         for _ in range(n):
-            px, py = -py, px  # 90 derece saat yonunde
+            px, py = -py, px
         return (self.left + px + cx, self.top + py + cy)
 
     def _ayar_btn_olustur(self):
@@ -1194,6 +1431,7 @@ class BilesenWidget(ft.Stack):
         cfg = BILESEN_CONFIGS[self.tip]
         portlar = []
         for p in cfg["portlar"]:
+            _port_renk = ft.Colors.GREEN_500 if p.get("giris") else ft.Colors.RED_500
             portlar.append(
                 ft.GestureDetector(
                     left=p["x"] - 7, top=p["y"] - 7, width=14, height=14,
@@ -1203,10 +1441,10 @@ class BilesenWidget(ft.Stack):
                         border_radius=7,
                         bgcolor=ft.Colors.BLACK87,
                         border=ft.Border(
-                            top=ft.BorderSide(2, ft.Colors.YELLOW_600),
-                            bottom=ft.BorderSide(2, ft.Colors.YELLOW_600),
-                            left=ft.BorderSide(2, ft.Colors.YELLOW_600),
-                            right=ft.BorderSide(2, ft.Colors.YELLOW_600),
+                            top=ft.BorderSide(2, _port_renk),
+                            bottom=ft.BorderSide(2, _port_renk),
+                            left=ft.BorderSide(2, _port_renk),
+                            right=ft.BorderSide(2, _port_renk),
                         ),
                         tooltip=p["ad"],
                     ),
@@ -1241,24 +1479,26 @@ class BilesenWidget(ft.Stack):
                             paint=ft.Paint(style=ft.PaintingStyle.FILL, color=renk))],
         )
 
+        # Metin containerlarini ayri olusturup sakla, boylece aynalama sonrasi
+        # metinleri tersine cevirip okunur tutabiliriz.
+        _etiket_cont = ft.Container(
+            width=W, height=H,
+            alignment=ft.Alignment(0, 0),
+            content=ft.Text(cfg["etiket"], size=18, weight="bold", color=ft.Colors.WHITE),
+        )
+        _isim_cont = ft.Container(
+            top=2, width=W,
+            content=ft.Text(self.isim, size=8, color=ft.Colors.WHITE60, text_align=ft.TextAlign.CENTER),
+        )
+        # kaydet
+        self._metin_containerlar = [_etiket_cont, _isim_cont]
+
         return ft.Stack(
             width=W, height=H,
             controls=[
                 sekil,
-                ft.Container(
-                    width=W, height=H,
-                    alignment=ft.Alignment(0, 0),
-                    content=ft.Text(cfg["etiket"], size=18, weight="bold",
-                                    color=ft.Colors.WHITE),
-                ),
-                ft.Container(
-                    top=2, width=W,
-                    content=ft.Text(
-                        self.isim, size=8,
-                        color=ft.Colors.WHITE60,
-                        text_align=ft.TextAlign.CENTER,
-                    ),
-                ),
+                _etiket_cont,
+                _isim_cont,
             ],
         )
 
@@ -1276,7 +1516,7 @@ class BilesenWidget(ft.Stack):
         )
 
     def _hareket(self, e):
-        self.left += e.local_delta.x
+        self.left += e.local_delta.x * self._yansima
         self.top  += e.local_delta.y
         self.update()
         self.durum.baglantilari_yenile()
@@ -1312,22 +1552,60 @@ class DurumKutusu(ft.GestureDetector):
             return "-"
         return f"{v * scale:.{digits}f}{(' ' + birim) if birim else ''}"
 
+    def _alan_goster(self, etiket, alan, deger, birim, scale=1.0, digits=2):
+        b = self._baglanti
+        # priority: kullanici -> yayilim -> motor -> unknown
+        if alan in b.kullanici_girdileri:
+            raw = b.kullanici_girdileri[alan]
+            if alan == "T":
+                val = self._durum._sicaklik_gosterim_c(raw)
+            else:
+                val = raw
+            deger_str = f"{val * scale:.{digits}f} {birim}"
+            renk = "#22C55E"
+            on_ek = ""
+        elif alan in b.yayilim_girdileri:
+            raw = b.yayilim_girdileri[alan]
+            if alan == "T":
+                val = self._durum._sicaklik_gosterim_c(raw)
+            else:
+                val = raw
+            deger_str = f"{val * scale:.{digits}f} {birim}"
+            renk = "#A855F7"
+            on_ek = "~ "
+        elif alan in b.motor_sonuclari:
+            raw = b.motor_sonuclari[alan]
+            if alan == "T":
+                val = self._durum._sicaklik_gosterim_c(raw)
+            else:
+                val = raw
+            deger_str = f"{val * scale:.{digits}f} {birim}"
+            renk = "#3B82F6"
+            on_ek = ""
+        else:
+            deger_str = "UNKNOWN"
+            renk = "#6B7280"
+            on_ek = ""
+        return ft.Text(f"{etiket} = {on_ek}{deger_str}", size=10, color=renk)
+
     def _icerik(self):
-        s = self._baglanti.cozulmus_durum
-        sart = self._baglanti.sinir_sartlari
+        b = self._baglanti
+        # build preview state from yayilim + kullanici (kullanici baskindir)
+        merged = dict(b.yayilim_girdileri)
+        merged.update(b.kullanici_girdileri)
+        s = b.cozulmus_durum
         if s is None:
-            s = self._durum._sinir_sartlarini_coz(self._durum._filtreli_sinir_sartlari(sart))
-        t = s.T if s else sart.get("T")
-        p = s.P if s else sart.get("P")
+            s = self._durum._sinir_sartlarini_coz(self._durum._filtreli_sinir_sartlari(merged))
+        t = s.T if s else None
+        p = s.P if s else None
         h = s.h if s else None
         ent = s.s if s else None
-        m = s.m_dot if s else sart.get("m_dot")
+        m = s.m_dot if s else None
         t_c = self._durum._sicaklik_gosterim_c(t) if t is not None else None
-        t_metni = (
-            f"{t_c:.2f} C ({t:.2f} K)"
-            if t is not None and t_c is not None
-            else "-"
-        )
+        if t is not None and t_c is not None:
+            t_display = t_c
+        else:
+            t_display = None
         return ft.Container(
             border_radius=3,
             bgcolor=ft.Colors.BLUE_GREY_50,
@@ -1377,11 +1655,11 @@ class DurumKutusu(ft.GestureDetector):
                         content=ft.Column(
                             spacing=2,
                             controls=[
-                                ft.Text(f"T = {t_metni}", size=10, color=ft.Colors.BLACK87),
-                                ft.Text(f"P = {self._fmt(p, 1e-6, 3, 'MPa')}", size=10, color=ft.Colors.BLACK87),
-                                ft.Text(f"h = {self._fmt(h, 1e-3, 2, 'kJ/kg')}", size=10, color=ft.Colors.BLACK87),
-                                ft.Text(f"s = {self._fmt(ent, 1e-3, 3, 'kJ/kgK')}", size=10, color=ft.Colors.BLACK87),
-                                ft.Text(f"m = {self._fmt(m, digits=2, birim='kg/s')}", size=10, color=ft.Colors.BLACK87),
+                                self._alan_goster("T", "T", t_display, "C", scale=1.0, digits=2),
+                                self._alan_goster("P", "P", p, "MPa", scale=1e-6, digits=3),
+                                self._alan_goster("h", "h", h, "kJ/kg", scale=1e-3, digits=2),
+                                self._alan_goster("s", "s", ent, "kJ/kgK", scale=1e-3, digits=3),
+                                self._alan_goster("m", "m_dot", m, "kg/s", scale=1.0, digits=2),
                             ],
                         ),
                     ),
@@ -1393,6 +1671,28 @@ class DurumKutusu(ft.GestureDetector):
         self.left += e.local_delta.x
         self.top += e.local_delta.y
         self.update()
+
+    def _baglanti_butonu_renk(self, baglanti):
+        n = len(baglanti.kullanici_girdileri)
+        cozuldu = bool(baglanti.motor_sonuclari)
+        if cozuldu:
+            return ft.Colors.CYAN_800
+        if n >= 2:
+            return ft.Colors.GREEN_900
+        if n == 1:
+            return ft.Colors.ORANGE_900
+        return ft.Colors.BLUE_GREY_700
+
+    def _baglanti_butonu_ikon(self, baglanti):
+        n = len(baglanti.kullanici_girdileri)
+        cozuldu = bool(baglanti.motor_sonuclari)
+        if cozuldu:
+            return ""
+        if n >= 2:
+            return "✓"
+        if n == 1:
+            return "⚠"
+        return "?"
 
     def verileri_guncelle(self):
         self.content = self._icerik()
@@ -1407,21 +1707,20 @@ class RotaNoktasi(ft.GestureDetector):
         self._baglanti = baglanti
         self._durum = durum
         self.index = index
-        self._etiket_noktasi = index == 0
         x, y = baglanti.rota_noktalari[index]
         super().__init__(
-            left=x - (16 if self._etiket_noktasi else 7),
-            top=y - (9 if self._etiket_noktasi else 7),
-            width=32 if self._etiket_noktasi else 14,
-            height=18 if self._etiket_noktasi else 14,
+            left=x - 7,
+            top=y - 7,
+            width=14,
+            height=14,
             mouse_cursor=ft.MouseCursor.MOVE,
             on_tap=lambda e: durum.durum_penceresi_ac(baglanti),
             on_double_tap=lambda e: durum.rota_noktasi_ekle(baglanti, self.index),
             on_secondary_tap=lambda e: durum.rota_noktasi_ekle(baglanti, self.index),
             on_pan_update=self._surukle,
             content=ft.Container(
-                border_radius=3 if self._etiket_noktasi else 7,
-                bgcolor=ft.Colors.BLUE_700 if self._etiket_noktasi else ft.Colors.CYAN_900,
+                border_radius=7,
+                bgcolor=ft.Colors.CYAN_900,
                 border=ft.Border(
                     top=ft.BorderSide(2, ft.Colors.CYAN_200),
                     bottom=ft.BorderSide(2, ft.Colors.CYAN_200),
@@ -1429,7 +1728,6 @@ class RotaNoktasi(ft.GestureDetector):
                     right=ft.BorderSide(2, ft.Colors.CYAN_200),
                 ),
                 alignment=ft.Alignment(0, 0),
-                content=ft.Text(baglanti.etiket or "S?", size=9, weight="bold", color=ft.Colors.WHITE) if self._etiket_noktasi else None,
                 tooltip="Tikla: durum penceresi | Surukle: x/y ekseninde kir",
             ),
         )
@@ -1443,16 +1741,16 @@ class RotaNoktasi(ft.GestureDetector):
             dx = 0
         self.left += dx
         self.top += dy
-        ox = 16 if self._etiket_noktasi else 7
-        oy = 9 if self._etiket_noktasi else 7
+        ox = 7
+        oy = 7
         self._baglanti.rota_noktalari[self.index] = (self.left + ox, self.top + oy)
         self.update()
         self._durum._ciz_baglantilar()
 
     def konumu_guncelle(self):
         x, y = self._baglanti.rota_noktalari[self.index]
-        self.left = x - (16 if self._etiket_noktasi else 7)
-        self.top = y - (9 if self._etiket_noktasi else 7)
+        self.left = x - 7
+        self.top = y - 7
         try:
             self.update()
         except Exception:
@@ -1474,7 +1772,7 @@ class BaglantiBolumu(ft.GestureDetector):
             on_pan_update=self._surukle,
             content=ft.Container(
                 border_radius=8,
-                bgcolor=ft.Colors.CYAN_800,
+                bgcolor=self._baglanti_butonu_renk(baglanti),
                 border=ft.Border(
                     top=ft.BorderSide(2, ft.Colors.CYAN_300),
                     bottom=ft.BorderSide(2, ft.Colors.CYAN_300),
@@ -1482,10 +1780,32 @@ class BaglantiBolumu(ft.GestureDetector):
                     right=ft.BorderSide(2, ft.Colors.CYAN_300),
                 ),
                 alignment=ft.Alignment(0, 0),
-                content=ft.Text(baglanti.etiket or "S?", size=7, weight="bold", color=ft.Colors.WHITE),
+                content=ft.Text(f"{baglanti.etiket or 'S?'} {self._baglanti_butonu_ikon(baglanti)}", size=7, weight="bold", color=ft.Colors.WHITE),
                 tooltip="Surukle: yolu degistir  |  Tikla: sinir sarti gir",
             ),
         )
+
+    def _baglanti_butonu_renk(self, baglanti):
+        n = len(baglanti.kullanici_girdileri)
+        cozuldu = bool(baglanti.motor_sonuclari)
+        if cozuldu:
+            return ft.Colors.CYAN_800
+        if n >= 2:
+            return ft.Colors.GREEN_900
+        if n == 1:
+            return ft.Colors.ORANGE_900
+        return ft.Colors.BLUE_GREY_700
+
+    def _baglanti_butonu_ikon(self, baglanti):
+        n = len(baglanti.kullanici_girdileri)
+        cozuldu = bool(baglanti.motor_sonuclari)
+        if cozuldu:
+            return ""
+        if n >= 2:
+            return "✓"
+        if n == 1:
+            return "⚠"
+        return "?"
 
     def _surukle(self, e):
         dx = e.local_delta.x
@@ -1515,7 +1835,7 @@ class BaglantiBolumu(ft.GestureDetector):
 # BÖLÜM 6: ANA UYGULAMA
 # ─────────────────────────────────────────────────────────────────────────────
 def main(page: ft.Page):
-    page.title   = "sCO2 Termodinamik Cevrim Tasarımcısı — TEKNOFEST"
+    page.title   = "TEKNOFEST"
     page.bgcolor = ft.Colors.BLUE_GREY_900
     page.padding = 0
     page.window_min_width  = 960
@@ -1582,17 +1902,18 @@ def main(page: ft.Page):
 
     akiskan_dd = ft.Dropdown(
         value="CarbonDioxide",
-        width=155,
+        width=180,
         options=[ft.dropdown.Option(a) for a in AKISKANLAR],
     )
     akiskan_dd.on_change = _akiskan_degis
+    uygulama._akiskan_dd_ref = akiskan_dd
 
     # Ust arac cubugu
     durum_metni = ft.Text("Hazir", color=ft.Colors.BLUE_GREY_400, size=11)
     uygulama.durum_metni = durum_metni
 
     toolbar = ft.Container(
-        height=52,
+        height=60,
         bgcolor=ft.Colors.BLUE_GREY_800,
         border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.BLUE_GREY_600)),
         padding=ft.Padding(left=16, right=16, top=8, bottom=8),
@@ -1600,15 +1921,15 @@ def main(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Text(
-                    "sCO2 Cevrim Tasarımcısı",
+                    "ÇEVRİM TASARIMCI",
                     size=15, weight="bold", color=ft.Colors.CYAN_300,
                 ),
                 ft.Container(width=18),
-                ft.Text("Akiskan:", color=ft.Colors.WHITE70, size=12),
+                ft.Text("AKIŞKAN:", color=ft.Colors.WHITE70, size=12),
                 akiskan_dd,
                 ft.Container(width=10),
                 ft.ElevatedButton(
-                    "Coz",
+                    "Çöz",
                     bgcolor=ft.Colors.GREEN_700,
                     color=ft.Colors.WHITE,
                     on_click=lambda _: uygulama.coz(),
@@ -1620,20 +1941,7 @@ def main(page: ft.Page):
                     color=ft.Colors.WHITE,
                     on_click=lambda _: uygulama.tumu_temizle(),
                 ),
-                ft.Container(width=6),
-                ft.ElevatedButton(
-                    "Kaydet",
-                    bgcolor=ft.Colors.BLUE_GREY_600,
-                    color=ft.Colors.WHITE,
-                    on_click=lambda _: uygulama.devreyi_kaydet(),
-                ),
-                ft.Container(width=6),
-                ft.ElevatedButton(
-                    "Yukle",
-                    bgcolor=ft.Colors.BLUE_GREY_600,
-                    color=ft.Colors.WHITE,
-                    on_click=lambda _: uygulama.devreyi_yukle(),
-                ),
+                
                 ft.Container(expand=True),
                 durum_metni,
             ],
