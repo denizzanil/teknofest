@@ -1,7 +1,11 @@
 """
-sCO2 Termodinamik Cevrim Tasarımcısı — TEKNOFEST
-Gelişmiş GUI: bileşen yerleştirme, port bağlama, sınır şartı girişi,
-çözücü entegrasyonu ve sonuç gösterimi.
+sCO2 Termodinamik Çevrim Tasarımcısı — TEKNOFEST
+Bu dosya, masaüstü Flet uygulamasının ana giriş noktasıdır.
+- `gui.py` çalıştırıldığında pencere açılır, bileşen yerleştirme,
+  port bağlama, sınır şartı girişi ve çözüm sonuçları gösterilir.
+- Hesaplama motoru `core/` altındaki modüllerden yüklenir.
+- CoolProp kurulumu yoksa GUI yine açılır ancak hesaplama devresi
+  çalıştırıldığında kullanıcıya uyarı verir.
 """
 
 import flet as ft
@@ -11,6 +15,8 @@ import math
 # ─────────────────────────────────────────────────────────────────────────────
 # BÖLÜM 0: ARKA PLAN MOTORU (güvenli yükleme)
 # ─────────────────────────────────────────────────────────────────────────────
+# Bileşen motorunu güvenli biçimde yükle. Eğer bağımlılık yoksa GUI yine
+# başlar, ancak çözüm fonksiyonu hata yerine kullanıcıya bilgi gösterir.
 try:
     from core.components import (Turbine, Compressor, Recuperator,
                                   SimpleHeatExchanger, Splitter, Mixer)
@@ -181,7 +187,15 @@ SABLONLAR = {
 # BÖLÜM 2: VERİ SINIFLARI
 # ─────────────────────────────────────────────────────────────────────────────
 class Baglanti:
-    """İki bileşen portu arasındaki akış bağlantısını temsil eder."""
+    """İki bileşen portu arasındaki akış bağlantısını temsil eder.
+
+    Bağlantı nesnesi şunları saklar:
+    - kaynak/hedef widget referansları
+    - bağlantının port konfigürasyonları
+    - kullanıcı tarafından girilen sınır şartları
+    - motorun çözdüğü durumu
+    - otomatik yayılım ve görsel rota verileri
+    """
 
     def __init__(self, kaynak_widget, kaynak_port, hedef_widget, hedef_port, etiket=None):
         self.kaynak_widget = kaynak_widget
@@ -246,6 +260,7 @@ class Baglanti:
 # BÖLÜM 3: UYGULAMA DURUMU
 # ─────────────────────────────────────────────────────────────────────────────
 class UygulamaDurumu:
+    """Uygulama durumu ve kullanıcı etkileşimlerini yöneten ana sınıf."""
     def __init__(self):
         self.page               = None
         self.cizim_alani        = None
@@ -1116,9 +1131,11 @@ class UygulamaDurumu:
 
     # ── Kaydet / Yukle ────────────────────────────────────────────────────
     def devreyi_kaydet(self):
+        # Dosya tabanlı devre kaydetme/yükleme kaldırıldı.
         raise NotImplementedError("devreyi_kaydet removed")
 
     def devreyi_yukle(self):
+        # `devre.json` artık kullanılmıyor; bu uygulama doğrudan GUI üzerinden çalışır.
         raise NotImplementedError("devreyi_yukle removed")
 
     # ── Verim Hesaplama ───────────────────────────────────────────────────
@@ -1388,6 +1405,7 @@ class UygulamaDurumu:
 # BÖLÜM 4: BİLEŞEN WIDGET
 # ─────────────────────────────────────────────────────────────────────────────
 class BilesenWidget(ft.Stack):
+    """Her bir termodinamik bileşeni ekranda gösteren ve kullanıcı etkileşimini yöneten widget."""
     def __init__(self, tip: str, isim: str, durum):
         super().__init__()
         self.tip      = tip
@@ -1553,6 +1571,7 @@ class BilesenWidget(ft.Stack):
 # BÖLÜM 5: BAĞLANTI ORTA NOKTA BUTONU  (sinir sarti girmek icin)
 # ─────────────────────────────────────────────────────────────────────────────
 class DurumKutusu(ft.GestureDetector):
+    """Bağlantı üzerindeki geçerli durumu gösteren küçük bilgi penceresi."""
     def __init__(self, baglanti, durum):
         self._baglanti = baglanti
         self._durum = durum
@@ -1856,6 +1875,11 @@ class BaglantiBolumu(ft.GestureDetector):
 # BÖLÜM 6: ANA UYGULAMA
 # ─────────────────────────────────────────────────────────────────────────────
 def main(page: ft.Page):
+    """Flet sayfasını hazırlayıp uygulamanın ana görünümünü oluşturur.
+
+    Sayfa, sol bileşen paleti, orta çizim alanı ve sağ sonuç paneli
+    ile kullanıcının bir çevrim şeması oluşturmasını sağlar.
+    """
     page.title   = "TEKNOFEST"
     page.bgcolor = ft.Colors.BLUE_GREY_900
     page.padding = 0
@@ -2080,3 +2104,4 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(target=main)
+ 
