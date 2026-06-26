@@ -19,7 +19,8 @@ import math
 # başlar, ancak çözüm fonksiyonu hata yerine kullanıcıya bilgi gösterir.
 try:
     from core.components import (Turbine, Compressor, Recuperator,
-                                  SimpleHeatExchanger, Splitter, Mixer)
+                                  Heater, Reactor, Cooler, Source, Sink,
+                                  Splitter, Mixer)
     from core.states import State
     from core.engine import CycleSolver
     MOTOR_HAZIR = True
@@ -61,12 +62,46 @@ BILESEN_CONFIGS = {
         ],
         "params": {"etkinlik": 0.95},
     },
-    "Heat Exchanger": {
+    "Heater": {
         "renk": ft.Colors.RED_600,
-        "etiket": "HX",
+        "etiket": "HTR",
         "portlar": [
             {"ad": "Giriş",  "x": 0, "y": H // 2, "giris": True},
             {"ad": "Çıkış",  "x": W, "y": H // 2, "giris": False},
+        ],
+        "params": {"delta_h": 0.0, "power_mw": None},
+    },
+    "Reactor": {
+        "renk": ft.Colors.RED_800,
+        "etiket": "R",
+        "portlar": [
+            {"ad": "Giriş",  "x": 0, "y": H // 2, "giris": True},
+            {"ad": "Çıkış",  "x": W, "y": H // 2, "giris": False},
+        ],
+        "params": {"power_mw": 0.0},
+    },
+    "Cooler": {
+        "renk": ft.Colors.CYAN_800,
+        "etiket": "CLR",
+        "portlar": [
+            {"ad": "Giriş",  "x": 0, "y": H // 2, "giris": True},
+            {"ad": "Çıkış",  "x": W, "y": H // 2, "giris": False},
+        ],
+        "params": {"target_T": None, "delta_h": None},
+    },
+    "Source": {
+        "renk": ft.Colors.LIGHT_GREEN_400,
+        "etiket": "SRC",
+        "portlar": [
+            {"ad": "Çıkış",  "x": W, "y": H // 2, "giris": False},
+        ],
+        "params": {"P": None, "T": None, "h": None, "m_dot": None},
+    },
+    "Sink": {
+        "renk": ft.Colors.BROWN_700,
+        "etiket": "SNK",
+        "portlar": [
+            {"ad": "Giriş",  "x": 0, "y": H // 2, "giris": True},
         ],
         "params": {},
     },
@@ -120,12 +155,12 @@ def port_bul(tip: str, ad: str):
 # baglanti: {"kaynak_isim", "kaynak_port", "hedef_isim", "hedef_port", "sinir_sartlari"}
 SABLONLAR = {
     "Basit Brayton": {
-        "akiskan": "CarbonDioxide",
+        "akiskan": "Nitrogen",
         "bilesenler": [
             {"tip": "Compressor",    "isim": "C1",       "left": 150, "top": 200, "ayarlar": {"verim": 0.89}},
-            {"tip": "Heat Exchanger","isim": "Reaktor",  "left": 330, "top": 200, "ayarlar": {}},
+            {"tip": "Heater","isim": "Reaktor",  "left": 330, "top": 200, "ayarlar": {}},
             {"tip": "Turbine",       "isim": "T1",       "left": 510, "top": 200, "ayarlar": {"verim": 0.92}},
-            {"tip": "Heat Exchanger","isim": "Radyator", "left": 330, "top": 340, "ayarlar": {}},
+            {"tip": "Heater","isim": "Radyator", "left": 330, "top": 340, "ayarlar": {}},
         ],
         "baglantilar": [
             {"kaynak_isim": "C1",      "kaynak_port": "Cikis",  "hedef_isim": "Reaktor",  "hedef_port": "Giris",  "sinir_sartlari": {"P": 21000000.0}},
@@ -134,35 +169,18 @@ SABLONLAR = {
             {"kaynak_isim": "Radyator","kaynak_port": "Cikis",  "hedef_isim": "C1",       "hedef_port": "Giris",  "sinir_sartlari": {"T": 305.0, "P": 7500000.0, "m_dot": 100.0}},
         ],
     },
-    "Rejeneratif Brayton": {
-        "akiskan": "CarbonDioxide",
-        "bilesenler": [
-            {"tip": "Compressor",    "isim": "C1",    "left": 120, "top": 220, "ayarlar": {"verim": 0.89}},
-            {"tip": "Recuperator",   "isim": "REC1",  "left": 290, "top": 160, "ayarlar": {"etkinlik": 0.92}},
-            {"tip": "Heat Exchanger","isim": "Reaktor","left": 490, "top": 160, "ayarlar": {}},
-            {"tip": "Turbine",       "isim": "T1",    "left": 660, "top": 160, "ayarlar": {"verim": 0.92}},
-            {"tip": "Heat Exchanger","isim": "Radyator","left": 290, "top": 320, "ayarlar": {}},
-        ],
-        "baglantilar": [
-            {"kaynak_isim": "C1",      "kaynak_port": "Cikis",       "hedef_isim": "REC1",    "hedef_port": "Soguk Giris", "sinir_sartlari": {"P": 21000000.0}},
-            {"kaynak_isim": "REC1",    "kaynak_port": "Soguk Cikis", "hedef_isim": "Reaktor", "hedef_port": "Giris",       "sinir_sartlari": {}},
-            {"kaynak_isim": "Reaktor", "kaynak_port": "Cikis",       "hedef_isim": "T1",      "hedef_port": "Giris",       "sinir_sartlari": {"T": 823.0}},
-            {"kaynak_isim": "T1",      "kaynak_port": "Cikis",       "hedef_isim": "REC1",    "hedef_port": "Sicak Giris", "sinir_sartlari": {}},
-            {"kaynak_isim": "REC1",    "kaynak_port": "Sicak Cikis", "hedef_isim": "Radyator","hedef_port": "Giris",       "sinir_sartlari": {}},
-            {"kaynak_isim": "Radyator","kaynak_port": "Cikis",       "hedef_isim": "C1",      "hedef_port": "Giris",       "sinir_sartlari": {"T": 305.0, "P": 7500000.0, "m_dot": 100.0}},
-        ],
-    },
+    
     "Recompression sCO2": {
         "akiskan": "CarbonDioxide",
         "bilesenler": [
-            {"tip": "Heat Exchanger", "isim": "CLR1",    "left": 80,  "top": 315, "ayarlar": {}},
+            {"tip": "Heater", "isim": "CLR1",    "left": 80,  "top": 315, "ayarlar": {}},
             {"tip": "Compressor",     "isim": "CMP1",    "left": 250, "top": 315, "ayarlar": {"verim": 0.89}},
             {"tip": "Recuperator",    "isim": "LTR1",    "left": 405, "top": 255, "ayarlar": {"etkinlik": 0.95}},
             {"tip": "Splitter",       "isim": "SPL1",    "left": 590, "top": 255, "ayarlar": {"oran_1": 0.65, "oran_2": 0.35}},
             {"tip": "Compressor",     "isim": "RCMP1",   "left": 690, "top": 365, "ayarlar": {"verim": 0.89}},
             {"tip": "Mixer",          "isim": "MIX1",    "left": 840, "top": 305, "ayarlar": {}},
             {"tip": "Recuperator",    "isim": "HTR1",    "left": 990, "top": 205, "ayarlar": {"etkinlik": 0.95}},
-            {"tip": "Heat Exchanger", "isim": "REACT1",  "left": 1170,"top": 205, "ayarlar": {}},
+            {"tip": "Heater", "isim": "REACT1",  "left": 1170,"top": 205, "ayarlar": {}},
             {"tip": "Turbine",        "isim": "TUR1",    "left": 1340,"top": 205, "ayarlar": {"verim": 0.92}},
         ],
         "baglantilar": [
@@ -180,6 +198,60 @@ SABLONLAR = {
             {"etiket": "S12", "kaynak_isim": "HTR1",   "kaynak_port": "Sicak Cikis", "hedef_isim": "LTR1",   "hedef_port": "Sicak Giris", "sinir_sartlari": {"T": 530.0}},
         ],
     },
+    "Ara Sogutmali Brayton": {
+        "akiskan": "Helium",
+        "bilesenler": [
+            {"tip": "Compressor", "isim": "LPC",       "left": 100, "top": 280, "ayarlar": {"verim": 0.89}},
+            {"tip": "Cooler",     "isim": "IC",        "left": 280, "top": 280, "ayarlar": {}},
+            {"tip": "Compressor", "isim": "HPC",       "left": 460, "top": 280, "ayarlar": {"verim": 0.89}},
+            {"tip": "Reactor",    "isim": "Reaktor",   "left": 640, "top": 150, "ayarlar": {}},
+            {"tip": "Turbine",    "isim": "TUR",       "left": 820, "top": 150, "ayarlar": {"verim": 0.92}},
+            {"tip": "Cooler",     "isim": "Radyator",  "left": 460, "top": 410, "ayarlar": {}},
+        ],
+        "baglantilar": [
+            {"kaynak_isim": "LPC",      "kaynak_port": "Cikis",  "hedef_isim": "IC",       "hedef_port": "Giris",  "sinir_sartlari": {"P": 12000000.0}},
+            {"kaynak_isim": "IC",       "kaynak_port": "Cikis",  "hedef_isim": "HPC",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 305.0}},
+            {"kaynak_isim": "HPC",      "kaynak_port": "Cikis",  "hedef_isim": "Reaktor",  "hedef_port": "Giris",  "sinir_sartlari": {"P": 21000000.0}},
+            {"kaynak_isim": "Reaktor",  "kaynak_port": "Cikis",  "hedef_isim": "TUR",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 1000.0}},
+            {"kaynak_isim": "TUR",      "kaynak_port": "Cikis",  "hedef_isim": "Radyator", "hedef_port": "Giris",  "sinir_sartlari": {}},
+            {"kaynak_isim": "Radyator", "kaynak_port": "Cikis",  "hedef_isim": "LPC",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 305.0, "P": 7500000.0, "m_dot": 100.0}},
+        ],
+    },
+    "Ara Isitmali Brayton": {
+        "akiskan": "Helium",
+        "bilesenler": [
+            {"tip": "Compressor", "isim": "CMP",       "left": 100, "top": 300, "ayarlar": {"verim": 0.89}},
+            {"tip": "Reactor",    "isim": "Reaktor",   "left": 280, "top": 150, "ayarlar": {}},
+            {"tip": "Turbine",    "isim": "HPT",       "left": 460, "top": 150, "ayarlar": {"verim": 0.92}},
+            {"tip": "Heater",     "isim": "Reheater",  "left": 640, "top": 250, "ayarlar": {}},
+            {"tip": "Turbine",    "isim": "LPT",       "left": 820, "top": 250, "ayarlar": {"verim": 0.92}},
+            {"tip": "Cooler",     "isim": "Radyator",  "left": 460, "top": 420, "ayarlar": {}},
+        ],
+        "baglantilar": [
+            {"kaynak_isim": "CMP",      "kaynak_port": "Cikis",  "hedef_isim": "Reaktor",  "hedef_port": "Giris",  "sinir_sartlari": {"P": 21000000.0}},
+            {"kaynak_isim": "Reaktor",  "kaynak_port": "Cikis",  "hedef_isim": "HPT",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 1100.0}},
+            {"kaynak_isim": "HPT",      "kaynak_port": "Cikis",  "hedef_isim": "Reheater", "hedef_port": "Giris",  "sinir_sartlari": {"P": 12000000.0}},
+            {"kaynak_isim": "Reheater", "kaynak_port": "Cikis",  "hedef_isim": "LPT",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 1100.0}},
+            {"kaynak_isim": "LPT",      "kaynak_port": "Cikis",  "hedef_isim": "Radyator", "hedef_port": "Giris",  "sinir_sartlari": {}},
+            {"kaynak_isim": "Radyator", "kaynak_port": "Cikis",  "hedef_isim": "CMP",      "hedef_port": "Giris",  "sinir_sartlari": {"T": 305.0, "P": 7500000.0, "m_dot": 100.0}},
+        ],
+    },
+    "Acik Cevrim Gaz Turbini": {
+        "akiskan": "Air",
+        "bilesenler": [
+            {"tip": "Source",     "isim": "Atmospher",  "left": 50,  "top": 250, "ayarlar": {"T": 298.15, "P": 101325.0, "m_dot": 50.0}},
+            {"tip": "Compressor", "isim": "CMP",       "left": 250, "top": 250, "ayarlar": {"verim": 0.89}},
+            {"tip": "Heater",     "isim": "Heater",    "left": 450, "top": 250, "ayarlar": {}},
+            {"tip": "Turbine",    "isim": "TUR",       "left": 650, "top": 250, "ayarlar": {"verim": 0.92}},
+            {"tip": "Sink",       "isim": "Exhaust",   "left": 850, "top": 250, "ayarlar": {}},
+        ],
+        "baglantilar": [
+            {"kaynak_isim": "Atmospher",  "kaynak_port": "Cikis", "hedef_isim": "CMP",   "hedef_port": "Giris", "sinir_sartlari": {}},
+            {"kaynak_isim": "CMP",       "kaynak_port": "Cikis", "hedef_isim": "Heater", "hedef_port": "Giris", "sinir_sartlari": {"P": 1013250.0}},
+            {"kaynak_isim": "Heater",    "kaynak_port": "Cikis", "hedef_isim": "TUR",    "hedef_port": "Giris", "sinir_sartlari": {"T": 1300.0}},
+            {"kaynak_isim": "TUR",       "kaynak_port": "Cikis", "hedef_isim": "Exhaust","hedef_port": "Giris", "sinir_sartlari": {"P": 101325.0}},
+        ],
+    }
 }
 
 
@@ -286,7 +358,8 @@ class UygulamaDurumu:
         self.sayac[tip] = self.sayac.get(tip, 0) + 1
         kisalt = {
             "Turbine": "T", "Compressor": "C", "Recuperator": "REC",
-            "Heat Exchanger": "HX", "Splitter": "SPL", "Mixer": "MIX",
+            "Heater": "HX", "Splitter": "SPL", "Mixer": "MIX",
+            "Reactor": "R", "Cooler": "CLR", "Source": "SRC", "Sink": "SNK",
         }
         return f"{kisalt.get(tip, tip[:3])}{self.sayac[tip]}"
 
@@ -781,71 +854,81 @@ class UygulamaDurumu:
         )
         girdiler.append(isim_alan)
 
-        if "verim" in widget.ayarlar:
-            f = ft.TextField(
-                label="Izantropik Verim (0-1)",
-                value=str(widget.ayarlar["verim"]),
-                dense=True,
-                border_color=ft.Colors.BLUE_GREY_500,
-                focused_border_color=ft.Colors.CYAN_400,
-                text_style=ft.TextStyle(color=ft.Colors.WHITE),
-                label_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_300),
-            )
-            alanlar["verim"] = f
-            girdiler.append(f)
+        # Generic parameters editor: render any numeric params present in widget.ayarlar
+        param_labels = {
+            "verim": "Izantropik Verim (0-1)",
+            "etkinlik": "Etkinlik / Effectiveness (0-1)",
+            "oran_1": "Cikis 1 Orani",
+            "oran_2": "Cikis 2 Orani",
+            "delta_h": "Delta h (J/kg)",
+            "power_mw": "Power (MW)",
+            "power_W": "Power (W)",
+            "target_T": "Target T (K)",
+            "P": "Basinc P (MPa)",
+            "T": "Sicaklik T (K)",
+            "h": "Entalpi h (J/kg)",
+            "m_dot": "Kütlesel Debi (kg/s)",
+        }
 
-        if "etkinlik" in widget.ayarlar:
+        for k, v in widget.ayarlar.items():
+            # create a text field for each parameter (editable)
+            label = param_labels.get(k, k)
             f = ft.TextField(
-                label="Etkinlik / Effectiveness (0-1)",
-                value=str(widget.ayarlar["etkinlik"]),
+                label=label,
+                value=str(v) if v is not None else "",
                 dense=True,
                 border_color=ft.Colors.BLUE_GREY_500,
                 focused_border_color=ft.Colors.CYAN_400,
                 text_style=ft.TextStyle(color=ft.Colors.WHITE),
                 label_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_300),
             )
-            alanlar["etkinlik"] = f
+            alanlar[k] = f
             girdiler.append(f)
-
-        if "oran_1" in widget.ayarlar:
-            f1 = ft.TextField(
-                label="Cikis 1 Orani",
-                value=str(widget.ayarlar["oran_1"]),
-                dense=True,
-                border_color=ft.Colors.BLUE_GREY_500,
-                focused_border_color=ft.Colors.CYAN_400,
-                text_style=ft.TextStyle(color=ft.Colors.WHITE),
-                label_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_300),
-            )
-            f2 = ft.TextField(
-                label="Cikis 2 Orani",
-                value=str(widget.ayarlar["oran_2"]),
-                dense=True,
-                border_color=ft.Colors.BLUE_GREY_500,
-                focused_border_color=ft.Colors.CYAN_400,
-                text_style=ft.TextStyle(color=ft.Colors.WHITE),
-                label_style=ft.TextStyle(color=ft.Colors.BLUE_GREY_300),
-            )
-            alanlar["oran_1"] = f1
-            alanlar["oran_2"] = f2
-            girdiler.extend([f1, f2])
 
         def kaydet(e):
             widget.isim = isim_alan.value.strip() or widget.isim
             for k, f in alanlar.items():
                 try:
-                    widget.ayarlar[k] = float(f.value)
+                    raw = f.value.strip()
+                    if raw == "":
+                        widget.ayarlar[k] = None
+                        continue
+                    if k == "P":
+                        low = raw.lower()
+                        if low.endswith('mpa'):
+                            widget.ayarlar[k] = float(raw[:-3].strip()) * 1e6
+                        elif low.endswith('pa'):
+                            widget.ayarlar[k] = float(raw[:-2].strip())
+                        else:
+                            widget.ayarlar[k] = float(raw) * 1e6
+                    else:
+                        widget.ayarlar[k] = float(raw)
                 except ValueError:
                     pass
             self._dlg_kapat()
             self._durum(f"{widget.isim} guncellendi")
+
+        # Build a plain list of controls showing computed port states (no lambdas)
+        port_status_controls = [ft.Divider(color=ft.Colors.BLUE_GREY_600), ft.Text("Hesaplanmis Port Durumlari:", size=11, color=ft.Colors.CYAN_300)]
+        for p in BILESEN_CONFIGS[widget.tip]["portlar"]:
+            b = next((x for x in self.baglantilar if (x.kaynak_widget is widget and x.kaynak_port['ad'] == p['ad']) or (x.hedef_widget is widget and x.hedef_port['ad'] == p['ad'])), None)
+            if b and b.cozulmus_durum and getattr(b.cozulmus_durum, 'T', None) is not None:
+                s = b.cozulmus_durum
+                try:
+                    t_k = self._sicaklik_gosterim_k(s.T)
+                    txt = f"{p['ad']}: T={t_k:.1f} K, P={s.P*1e-6:.3f} MPa, h={s.h/1000:.2f} kJ/kg, m_dot={s.m_dot:.2f} kg/s"
+                except Exception:
+                    txt = f"{p['ad']}: —"
+                port_status_controls.append(ft.Text(txt, size=10, color=ft.Colors.CYAN_200))
+            else:
+                port_status_controls.append(ft.Text(f"{p['ad']}: —", size=10, color=ft.Colors.BLUE_GREY_400))
 
         dlg = ft.AlertDialog(
             title=ft.Text(f"{widget.tip} Ozellikleri", color=ft.Colors.WHITE),
             bgcolor=ft.Colors.BLUE_GREY_800,
             content=ft.Container(
                 width=300,
-                content=ft.Column(controls=girdiler, spacing=10),
+                content=ft.Column(controls=girdiler + port_status_controls, spacing=10),
             ),
             actions=[
                 ft.TextButton(
@@ -868,17 +951,16 @@ class UygulamaDurumu:
         s.update()
         return s
 
-    def _sicaklik_gosterim_c(self, t_kelvin):
+    def _sicaklik_gosterim_k(self, t_kelvin):
         if t_kelvin is None:
             return ""
-        return t_kelvin - 273.15
+        return t_kelvin
 
     def _sicaklik_kayit_k(self, t_value):
         if t_value is None:
             return None
-        # GUI kullanicisi sicakligi C girer; eski kayitlarda 32/50 gibi
-        # degerler varsa onlari da C kabul edip core tarafina K gonderiyoruz.
-        return t_value + 273.15 if t_value < 200 else t_value
+        # GUI kullanıcısı sıcaklığı Kelvin cinsinden girer.
+        return t_value
 
     def _filtreli_sinir_sartlari(self, sartlar: dict):
         temiz = {}
@@ -918,7 +1000,7 @@ class UygulamaDurumu:
                 yayilan["m_dot"] = m
 
         # KURAL 2: P sadece izobarik sayilan bilesenlerde korunur
-        if tip in ("Heat Exchanger", "Recuperator"):
+        if tip in ("Heater", "Recuperator", "Cooler", "Reactor"):
             p = deger_al("P")
             if p is not None:
                 yayilan["P"] = p
@@ -964,8 +1046,8 @@ class UygulamaDurumu:
         ]
 
         tanim = [
-            ("T",     "Sıcaklık T [C]",     "UNKNOWN"),
-            ("P",     "Basınç P [Pa]",      "UNKNOWN"),
+            ("T",     "Sıcaklık T [K]",     "UNKNOWN"),
+            ("P",     "Basınç P [MPa]",      "UNKNOWN"),
             ("h",     "Entalpi h [J/kg]",   "UNKNOWN"),
             ("s",     "Entropi s [J/kgK]",  "UNKNOWN"),
             ("m_dot", "Kütlesel Debi [kg/s]", "UNKNOWN"),
@@ -978,7 +1060,9 @@ class UygulamaDurumu:
 
             if kullanici_var:
                 if k == "T":
-                    deger = self._sicaklik_gosterim_c(b.kullanici_girdileri[k])
+                    deger = b.kullanici_girdileri[k]
+                elif k == "P":
+                    deger = b.kullanici_girdileri[k] * 1e-6
                 else:
                     deger = b.kullanici_girdileri[k]
                 value = f"{deger:.2f}" if deger is not None else ""
@@ -987,7 +1071,9 @@ class UygulamaDurumu:
                 read_only = False
             elif yayilim_var:
                 if k == "T":
-                    deger = self._sicaklik_gosterim_c(b.yayilim_girdileri[k])
+                    deger = b.yayilim_girdileri[k]
+                elif k == "P":
+                    deger = b.yayilim_girdileri[k] * 1e-6
                 else:
                     deger = b.yayilim_girdileri[k]
                 value = f"(yayilim) {deger:.2f}"
@@ -996,7 +1082,9 @@ class UygulamaDurumu:
                 read_only = True
             elif motor_var:
                 if k == "T":
-                    deger = self._sicaklik_gosterim_c(b.motor_sonuclari[k])
+                    deger = b.motor_sonuclari[k]
+                elif k == "P":
+                    deger = b.motor_sonuclari[k] * 1e-6
                 else:
                     deger = b.motor_sonuclari[k]
                 value = f"(motor) {deger:.2f}"
@@ -1052,7 +1140,21 @@ class UygulamaDurumu:
             for k, f in alanlar.items():
                 if f.value.strip() and not f.read_only:
                     try:
-                        deger = float(f.value)
+                        raw = f.value.strip()
+                        low = raw.lower()
+                        # Accept explicit unit suffixes 'mpa' or 'pa'
+                        if k == 'P':
+                            if low.endswith('mpa'):
+                                deger = float(raw[:-3].strip()) * 1e6
+                            elif low.endswith('pa'):
+                                deger = float(raw[:-2].strip())
+                            else:
+                                deger = float(raw) * 1e6
+                        else:
+                            if low.endswith('k'):
+                                deger = float(raw[:-1].strip())
+                            else:
+                                deger = float(raw)
                         if k == "T":
                             deger = self._sicaklik_kayit_k(deger)
                         yeni_kullanici[k] = deger
@@ -1166,7 +1268,7 @@ class UygulamaDurumu:
                             dW = si.m_dot * (si.h - so.h)
                             W_net += dW
 
-                elif tip == "Heat Exchanger":
+                elif tip in ("Heater", "Cooler", "Reactor"):
                     giris_b = next(
                         (b for b in self.baglantilar
                          if b.hedef_widget is widget), None
@@ -1210,17 +1312,42 @@ class UygulamaDurumu:
             self._durum("Cozum hesaplaniyor...")
             self.page.update()
 
+            # Ensure the solver uses the currently-selected dropdown fluid
+            # (some UI actions or template loads may have modified `self.akiskan`,
+            # so prefer the actual dropdown control value if present).
+            if hasattr(self, "_akiskan_dd_ref") and self._akiskan_dd_ref:
+                try:
+                    self.akiskan = self._akiskan_dd_ref.value
+                except Exception:
+                    pass
+
             solver = CycleSolver()
 
             for b in self.baglantilar:
                 # clear prior solution so failed solves don't leave stale data
                 b.cozulmus_durum = None
                 s = State(self.akiskan)
+                try:
+                    print(f"[coz] init {b.etiket or ''}: State fluid={s.fluid} P={s.P} T={s.T} h={s.h} m_dot={s.m_dot}")
+                except Exception:
+                    pass
                 b.sinir_sartlari = self._filtreli_sinir_sartlari(b.sinir_sartlari)
                 for k, v in b.sinir_sartlari.items():
-                    setattr(s, k, v)
+                    try:
+                        s.set_value(k, v, fixed=True)
+                    except Exception:
+                        setattr(s, k, v)
                 b.cozulmus_durum = s
                 solver.add_state(s)
+
+            # Ensure all states use the currently selected fluid
+            for s in solver.states:
+                s.fluid = self.akiskan
+            try:
+                for idx, s in enumerate(solver.states):
+                    print(f"[coz] solver.state[{idx}] fluid={s.fluid} P={s.P} T={s.T} h={s.h} m_dot={s.m_dot}")
+            except Exception:
+                pass
 
             port_map: dict = {}
             for b in self.baglantilar:
@@ -1236,8 +1363,21 @@ class UygulamaDurumu:
                     obj = Compressor(widget.isim, ayar.get("verim", 0.89))
                 elif tip == "Recuperator":
                     obj = Recuperator(widget.isim, ayar.get("etkinlik", 0.95))
-                elif tip == "Heat Exchanger":
-                    obj = SimpleHeatExchanger(widget.isim)
+                elif tip == "Heater":
+                    from core.components import Heater
+                    obj = Heater(widget.isim, delta_h=ayar.get("delta_h"), power_W=(ayar.get("power_mw") * 1e6 if ayar.get("power_mw") else None))
+                elif tip == "Reactor":
+                    from core.components import Reactor
+                    obj = Reactor(widget.isim, power_mw=ayar.get("power_mw"))
+                elif tip == "Cooler":
+                    from core.components import Cooler
+                    obj = Cooler(widget.isim, target_T=ayar.get("target_T"), delta_h=ayar.get("delta_h"))
+                elif tip == "Source":
+                    from core.components import Source
+                    obj = Source(widget.isim, P=ayar.get("P"), T=ayar.get("T"), h=ayar.get("h"), m_dot=ayar.get("m_dot"), fluid=self.akiskan)
+                elif tip == "Sink":
+                    from core.components import Sink
+                    obj = Sink(widget.isim)
                 elif tip == "Splitter":
                     obj = Splitter(
                         widget.isim,
@@ -1264,6 +1404,60 @@ class UygulamaDurumu:
                 b.yayilim_girdileri = self._yayilan_parametreler(b)
 
             basarili = solver.solve(max_iterations=100)
+            try:
+                for b in self.baglantilar:
+                    s = b.cozulmus_durum
+                    if s is not None:
+                        print(f"[coz result] {b.etiket or ''}: fluid={s.fluid} P={s.P} T={s.T} h={s.h} m_dot={s.m_dot}")
+            except Exception:
+                pass
+
+            # Sync computed component-level properties back into GUI widget settings
+            try:
+                import core.components as comps
+                for comp in getattr(solver, 'components', []):
+                    # find matching widget by name
+                    w = next((x for x in self.bilesenler if x.isim == comp.name), None)
+                    if not w:
+                        continue
+
+                    # Heater / Reactor: fill delta_h and power if not provided by user
+                    if isinstance(comp, (comps.Heater, comps.Reactor)) and len(comp.inlet_states) == 1 and len(comp.outlet_states) == 1:
+                        si = comp.inlet_states[0]
+                        so = comp.outlet_states[0]
+                        if si.h is not None and so.h is not None:
+                            delta_h_calc = so.h - si.h
+                            power_calc = si.m_dot * delta_h_calc if si.m_dot else None
+                            # only populate if widget ayarlar doesn't already have a meaningful value
+                            if not w.ayarlar.get('delta_h'):
+                                w.ayarlar['delta_h'] = float(delta_h_calc)
+                            if power_calc is not None:
+                                if not w.ayarlar.get('power_W'):
+                                    w.ayarlar['power_W'] = float(power_calc)
+                                if not w.ayarlar.get('power_mw'):
+                                    w.ayarlar['power_mw'] = float(power_calc) / 1e6
+
+                    # Cooler: populate delta_h if available
+                    if isinstance(comp, comps.Cooler) and len(comp.inlet_states) == 1 and len(comp.outlet_states) == 1:
+                        si = comp.inlet_states[0]
+                        so = comp.outlet_states[0]
+                        if si.h is not None and so.h is not None:
+                            delta_h_calc = si.h - so.h
+                            if not w.ayarlar.get('delta_h'):
+                                w.ayarlar['delta_h'] = float(delta_h_calc)
+
+                    # Turbine/Compressor/Pump: compute shaft power (positive for turbine)
+                    if isinstance(comp, (comps.Turbine, comps.Compressor, comps.Pump)) and len(comp.inlet_states) == 1 and len(comp.outlet_states) == 1:
+                        si = comp.inlet_states[0]
+                        so = comp.outlet_states[0]
+                        if si.h is not None and so.h is not None and si.m_dot:
+                            power_calc = si.m_dot * (si.h - so.h)
+                            if not w.ayarlar.get('power_W'):
+                                w.ayarlar['power_W'] = float(power_calc)
+                            if not w.ayarlar.get('power_mw'):
+                                w.ayarlar['power_mw'] = float(power_calc) / 1e6
+            except Exception:
+                pass
             for b in self.baglantilar:
                 b.sinir_sartlari = self._filtreli_sinir_sartlari(b.sinir_sartlari)
                 b.kullanici_girdileri = dict(b.sinir_sartlari)
@@ -1309,7 +1503,7 @@ class UygulamaDurumu:
             def _f(v, scale=1.0, digits=2, birim=""):
                 return f"{v * scale:.{digits}f} {birim}".strip() if v is not None else "—"
 
-            t_str = _f(s.T - 273.15 if s.T is not None else None, digits=1, birim="C")
+            t_str = _f(s.T if s.T is not None else None, digits=1, birim="K")
             p_str = _f(s.P, 1e-6, 3, "MPa")
             h_str = _f(s.h, 1e-3, 2, "kJ/kg")
             m_str = _f(s.m_dot, digits=2, birim="kg/s")
@@ -1421,6 +1615,8 @@ class BilesenWidget(ft.Stack):
         self._aci_adet = 0   # 90 derece adim sayisi (0-3)
         self._yansima  = 1
         self._metin_containerlar = []
+        self._drag_last_global = None
+        self._drag_last_local = None
 
         self.controls = [self._gorsel_olustur(), self._kalkan_olustur(), *self._portlar_olustur(), self._ayar_btn_olustur(), self._dondur_btn_olustur()]
 
@@ -1508,7 +1704,7 @@ class BilesenWidget(ft.Stack):
         elif self.tip == "Mixer":
             pts = [cv.Path.MoveTo(0, 0), cv.Path.LineTo(W, m * 1.5),
                    cv.Path.LineTo(W, H - m * 1.5), cv.Path.LineTo(0, H), cv.Path.Close()]
-        else:  # Recuperator, Heat Exchanger — dikdortgen
+        else:  # Recuperator, Heater — dikdortgen
             pts = [cv.Path.MoveTo(0, 0), cv.Path.LineTo(W, 0),
                    cv.Path.LineTo(W, H), cv.Path.LineTo(0, H), cv.Path.Close()]
 
@@ -1544,7 +1740,9 @@ class BilesenWidget(ft.Stack):
     def _kalkan_olustur(self):
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.MOVE,
+            on_pan_start=self._pan_start,
             on_pan_update=self._hareket,
+            on_pan_end=self._pan_end,
             on_secondary_tap=self._sag_tik,
             on_long_press=self._sag_tik,
             on_double_tap=self._cift_tik,
@@ -1554,11 +1752,31 @@ class BilesenWidget(ft.Stack):
             ),
         )
 
+    def _pan_start(self, e):
+        self._drag_last_global = e.global_position
+        self._drag_last_local = e.local_position
+
     def _hareket(self, e):
-        self.left += e.local_delta.x * self._yansima
-        self.top  += e.local_delta.y
+        if e.global_position is None or e.local_position is None:
+            return
+        if self._drag_last_global is None or self._drag_last_local is None:
+            self._pan_start(e)
+            return
+
+        dx = e.global_position.x - self._drag_last_global.x
+        dy = e.global_position.y - self._drag_last_global.y
+        self._drag_last_global = e.global_position
+        self._drag_last_local = e.local_position
+
+        # global pozisyon farkını kullanarak, görsel dönüşümden daha az etkilenir
+        self.left += dx
+        self.top  += dy
         self.update()
         self.durum.baglantilari_yenile()
+
+    def _pan_end(self, e):
+        self._drag_last_global = None
+        self._drag_last_local = None
 
     def _sag_tik(self, e):
         self.durum.bilesen_menu_ac(self)
@@ -1596,29 +1814,17 @@ class DurumKutusu(ft.GestureDetector):
         b = self._baglanti
         # priority: kullanici -> yayilim -> motor -> unknown
         if alan in b.kullanici_girdileri:
-            raw = b.kullanici_girdileri[alan]
-            if alan == "T":
-                val = self._durum._sicaklik_gosterim_c(raw)
-            else:
-                val = raw
+            val = b.kullanici_girdileri[alan]
             deger_str = f"{val * scale:.{digits}f} {birim}"
             renk = "#22C55E"
             on_ek = ""
         elif alan in b.yayilim_girdileri:
-            raw = b.yayilim_girdileri[alan]
-            if alan == "T":
-                val = self._durum._sicaklik_gosterim_c(raw)
-            else:
-                val = raw
+            val = b.yayilim_girdileri[alan]
             deger_str = f"{val * scale:.{digits}f} {birim}"
             renk = "#A855F7"
             on_ek = "~ "
         elif alan in b.motor_sonuclari:
-            raw = b.motor_sonuclari[alan]
-            if alan == "T":
-                val = self._durum._sicaklik_gosterim_c(raw)
-            else:
-                val = raw
+            val = b.motor_sonuclari[alan]
             deger_str = f"{val * scale:.{digits}f} {birim}"
             renk = "#3B82F6"
             on_ek = ""
@@ -1641,11 +1847,7 @@ class DurumKutusu(ft.GestureDetector):
         h = s.h if s else None
         ent = s.s if s else None
         m = s.m_dot if s else None
-        t_c = self._durum._sicaklik_gosterim_c(t) if t is not None else None
-        if t is not None and t_c is not None:
-            t_display = t_c
-        else:
-            t_display = None
+        t_display = t if t is not None else None
         return ft.Container(
             border_radius=3,
             bgcolor=ft.Colors.BLUE_GREY_50,
@@ -1695,7 +1897,7 @@ class DurumKutusu(ft.GestureDetector):
                         content=ft.Column(
                             spacing=2,
                             controls=[
-                                self._alan_goster("T", "T", t_display, "C", scale=1.0, digits=2),
+                                self._alan_goster("T", "T", t_display, "K", scale=1.0, digits=2),
                                 self._alan_goster("P", "P", p, "MPa", scale=1e-6, digits=3),
                                 self._alan_goster("h", "h", h, "kJ/kg", scale=1e-3, digits=2),
                                 self._alan_goster("s", "s", ent, "kJ/kgK", scale=1e-3, digits=3),
@@ -1880,7 +2082,7 @@ def main(page: ft.Page):
     Sayfa, sol bileşen paleti, orta çizim alanı ve sağ sonuç paneli
     ile kullanıcının bir çevrim şeması oluşturmasını sağlar.
     """
-    page.title   = "TEKNOFEST"
+    page.title   = "CS"
     page.bgcolor = ft.Colors.BLUE_GREY_900
     page.padding = 0
     page.window_min_width  = 960
@@ -1931,7 +2133,7 @@ def main(page: ft.Page):
                 ft.Container(
                     padding=ft.Padding(left=12, right=12, top=8, bottom=8),
                     content=ft.Text(
-                        "OZELLIKLER / SONUCLAR",
+                        "RESULTS",
                         size=10, weight="bold", color=ft.Colors.BLUE_GREY_400,
                     ),
                 ),
@@ -1941,7 +2143,7 @@ def main(page: ft.Page):
         ),
     )
 
-    # Akiskan secimi
+    # Akiskan secimi!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     def _akiskan_degis(e):
         uygulama.akiskan = akiskan_dd.value
 
@@ -1966,22 +2168,22 @@ def main(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Text(
-                    "ÇEVRİM TASARIMCI",
+                    "CYCLE SOLVER",
                     size=15, weight="bold", color=ft.Colors.CYAN_300,
                 ),
                 ft.Container(width=18),
-                ft.Text("AKIŞKAN:", color=ft.Colors.WHITE70, size=12),
+                ft.Text("FLUID:", color=ft.Colors.WHITE70, size=12),
                 akiskan_dd,
                 ft.Container(width=10),
                 ft.ElevatedButton(
-                    "Çöz",
+                    "SOLVE",
                     bgcolor=ft.Colors.GREEN_700,
                     color=ft.Colors.WHITE,
                     on_click=lambda _: uygulama.coz(),
                 ),
                 ft.Container(width=6),
                 ft.ElevatedButton(
-                    "Temizle",
+                    "CLEAR",
                     bgcolor=ft.Colors.RED_900,
                     color=ft.Colors.WHITE,
                     on_click=lambda _: uygulama.tumu_temizle(),
@@ -2024,13 +2226,14 @@ def main(page: ft.Page):
         border=ft.Border(right=ft.BorderSide(1, ft.Colors.BLUE_GREY_600)),
         padding=12,
         content=ft.Column(
+            scroll=ft.ScrollMode.AUTO,
             controls=[
-                ft.Text("BILESEN PALETI", size=10, weight="bold",
+                ft.Text("COMPONENTS", size=10, weight="bold",
                         color=ft.Colors.BLUE_GREY_400),
                 ft.Divider(color=ft.Colors.BLUE_GREY_600, height=1),
                 *[bilesen_btn(t) for t in BILESEN_CONFIGS],
                 ft.Divider(color=ft.Colors.BLUE_GREY_600, height=1),
-                ft.Text("HAZIR SABLONLAR", size=10, weight="bold",
+                ft.Text("EXAMPLES", size=10, weight="bold",
                         color=ft.Colors.BLUE_GREY_400),
                 *[
                     ft.Container(
@@ -2104,4 +2307,3 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(target=main)
- 
