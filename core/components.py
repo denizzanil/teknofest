@@ -330,40 +330,54 @@ class Valve(Component):
 class Heater(Component):
     """Basit ısıtıcı / entalpi sağlayıcı. Giriş akışına belirli bir
     birim kütle başına entalpi artışı (delta_h [J/kg]) veya güç (W)
-    uygulayarak çıkış entalpisi hesaplar."""
+    uygulayarak çıkış entalpisi hesaplar. Ayrıca giriş ve çıkış
+    sıcaklığı biliniyorsa entalpi farkını otomatik türetir."""
+    
     def __init__(self, name, delta_h: float = None, power_W: float = None):
         super().__init__(name)
         self.delta_h = delta_h
         self.power_W = power_W
-        # İzobarik kabul edilebilir varsayım
-        self.is_isobaric = True
+        self.is_isobaric = True # Isıtıcılarda basınç düşümü ihmal edilir
 
     def solve(self):
+        # 1. Temel kütle ve basınç korunumlarını çalıştır
         solved = self.apply_assumptions()
+        
         if len(self.inlet_states) != 1 or len(self.outlet_states) != 1:
             return solved
 
         inlet = self.inlet_states[0]
         outlet = self.outlet_states[0]
 
-        # Basınç eşitle
-        if inlet.P is not None and outlet.P is None and not outlet.is_fixed('P'):
-            outlet.set_value('P', inlet.P)
-            solved = True
+        # 2. Eğer sıcaklıklar belliyse, entalpiyi otomatik hesapla ve delta_h'i güncelle
+        # Bu blok, giriş ve çıkış durumları tamamen tanımlıysa entalpiyi günceller.
+        if inlet.T is not None and outlet.T is not None and inlet.P is not None:
+            if outlet.h is None and not outlet.is_fixed('h'):
+                try:
+                    h_in = PropsSI('H', 'P', inlet.P, 'T', inlet.T, inlet.fluid)
+                    h_out = PropsSI('H', 'P', outlet.P, 'T', outlet.T, inlet.fluid)
+                    outlet.set_value('h', h_out)
+                    self.delta_h = h_out - h_in
+                    if outlet.update():
+                        solved = True
+                except ValueError as e:
+                    print(f"{self.name} (T-tabanlı) hesaplanırken hata: {e}")
 
-        # Eğer giriş entalpisi ve debi bilinirse entalpi artırılabilir
+        # 3. Eğer delta_h veya power_W kullanıcı tarafından girilmişse, çıkış entalpisini hesapla
         if inlet.h is not None and outlet.h is None and not outlet.is_fixed('h'):
             try:
+                # delta_h öncelikli
                 if self.delta_h is not None:
                     outlet.set_value('h', inlet.h + self.delta_h)
                     if outlet.update():
                         solved = True
-                elif self.power_W is not None and inlet.m_dot:
+                # yoksa power_W kullan
+                elif self.power_W is not None and inlet.m_dot is not None:
                     outlet.set_value('h', inlet.h + (self.power_W / inlet.m_dot))
                     if outlet.update():
                         solved = True
             except ValueError as e:
-                print(f"{self.name} hesaplanırken hata: {e}")
+                print(f"{self.name} (Parametre-tabanlı) hesaplanırken hata: {e}")
 
         return solved
 

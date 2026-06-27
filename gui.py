@@ -1247,53 +1247,38 @@ class UygulamaDurumu:
         Q_out = 0.0
 
         for widget in self.bilesenler:
-            tip = widget.tip
+            # Widget nesnesinin doğrudan kendi içinde (veya bileşen sınıfında) 
+            # delta_h veya W değerini döndüren bir metodu olması en doğrusudur.
+            # Ancak mevcut yapınızı bozmadan şöyle bir genişletme yapabiliriz:
+            
+            # 1. Isı transferi olan bileşenler (Tüm ısı değiştiriciler için)
+            # Tüm giriş ve çıkışların entalpi farklarını toplayan bir döngü
+            # (Isı korunumu için: sum(m_dot_out * h_out) - sum(m_dot_in * h_in))
+            
             try:
-                if tip in ("Turbine", "Compressor"):
-                    giris_b = next(
-                        (b for b in self.baglantilar
-                         if b.hedef_widget is widget), None
-                    )
-                    cikis_b = next(
-                        (b for b in self.baglantilar
-                         if b.kaynak_widget is widget), None
-                    )
-                    if giris_b and cikis_b:
-                        si = giris_b.cozulmus_durum
-                        so = cikis_b.cozulmus_durum
-                        if (si and so
-                                and si.h is not None
-                                and so.h is not None
-                                and si.m_dot is not None):
-                            dW = si.m_dot * (si.h - so.h)
-                            W_net += dW
+                # Giriş ve çıkış enerjilerini hesapla
+                inlet_energy = sum([b.cozulmus_durum.m_dot * b.cozulmus_durum.h 
+                                for b in self.baglantilar if b.hedef_widget == widget 
+                                and b.cozulmus_durum and b.cozulmus_durum.h is not None])
+                
+                outlet_energy = sum([b.cozulmus_durum.m_dot * b.cozulmus_durum.h 
+                                    for b in self.baglantilar if b.kaynak_widget == widget 
+                                    and b.cozulmus_durum and b.cozulmus_durum.h is not None])
 
-                elif tip in ("Heater", "Cooler", "Reactor"):
-                    giris_b = next(
-                        (b for b in self.baglantilar
-                         if b.hedef_widget is widget), None
-                    )
-                    cikis_b = next(
-                        (b for b in self.baglantilar
-                         if b.kaynak_widget is widget), None
-                    )
-                    if giris_b and cikis_b:
-                        si = giris_b.cozulmus_durum
-                        so = cikis_b.cozulmus_durum
-                        if (si and so
-                                and si.h is not None
-                                and so.h is not None
-                                and si.m_dot is not None):
-                            dQ = si.m_dot * (so.h - si.h)
-                            if dQ > 0:
-                                Q_in  += dQ
-                            else:
-                                Q_out += abs(dQ)
+                dQ = inlet_energy - outlet_energy # Giriş - Çıkış
 
-            except Exception:
-                pass
+                if widget.tip in ("Turbine", "Compressor"):
+                    W_net += dQ # Türbin için (in-out) pozitif, Kompresör için negatif
+                elif widget.tip in ("Heater", "Cooler", "Reactor", "Recuperator"):
+                    if dQ < 0: # Sisteme ısı girişi
+                        Q_in += abs(dQ)
+                    else: # Sistemden ısı çıkışı
+                        Q_out += abs(dQ)
+                        
+            except Exception as e:
+                print(f"Verim hesaplama hatası ({widget.tip}): {e}")
 
-        eta = (W_net / Q_in * 100) if Q_in > 1 else None
+        eta = (W_net / Q_in * 100) if Q_in > 0.1 else None
         return W_net, Q_in, Q_out, eta
 
     # ── Çözücü ────────────────────────────────────────────────────────────
