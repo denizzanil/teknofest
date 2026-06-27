@@ -1507,6 +1507,7 @@ class UygulamaDurumu:
             p_str = _f(s.P, 1e-6, 3, "MPa")
             h_str = _f(s.h, 1e-3, 2, "kJ/kg")
             m_str = _f(s.m_dot, digits=2, birim="kg/s")
+            s_str = _f(s.s, 1e-3, 3, "kJ/kgK")
 
             satirlar.append(
                 ft.Container(
@@ -1529,6 +1530,9 @@ class UygulamaDurumu:
                             ]),
                             ft.Row(spacing=6, controls=[
                                 ft.Text(f"h = {h_str}", size=10, color=ft.Colors.WHITE70),
+                                ft.Text(f"s = {s_str}", size=10, color=ft.Colors.WHITE70),
+                            ]),
+                            ft.Row(spacing=6, controls=[
                                 ft.Text(f"m = {m_str}", size=10, color=ft.Colors.WHITE70),
                             ]),
                         ],
@@ -2307,3 +2311,9 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(target=main)
+
+
+
+"""
+ts diagramlarını çözmeyi eklememiz gerekiyor.
+"""
